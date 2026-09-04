@@ -80,8 +80,29 @@ class FinalReport(BaseModel):
     references: list[Source]
 
 
+class StoredReport(BaseModel):
+    report_id: str
+    topic: str
+    created_at: datetime
+    quality: QualityLevel
+    report: FinalReport
+
+
+class MemoryMatch(BaseModel):
+    report_id: str
+    topic: str
+    key_findings: list[Finding]
+    gaps: list[Gap]
+    conflicts: list[Conflict]
+
+
+class MemoryContext(BaseModel):
+    matches: list[MemoryMatch]
+
+
 class ResearchState(BaseModel):
     user_topic: str
+    memory_context: MemoryContext | None
     sub_questions: list[str]
     sources: list[Source]
     findings: list[Finding]
