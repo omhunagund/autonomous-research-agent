@@ -8,6 +8,7 @@ langgraph==1.2.11
 ddgs==9.16.0
 httpx==0.28.1
 beautifulsoup4==4.15.0
+trafilatura==2.2.0
 
 # Configuration
 python-dotenv==1.2.3
