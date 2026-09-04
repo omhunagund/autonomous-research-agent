@@ -26,6 +26,11 @@ class GapType(str, Enum):
     EVIDENCE_GAP = "evidence_gap"
 
 
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+
 class Source(BaseModel):
     citation_id: int
     title: str
@@ -34,7 +39,6 @@ class Source(BaseModel):
     snippet: str
     search_queries: list[str]
     content: str
-
 
 class Finding(BaseModel):
     claim: str
