@@ -1,0 +1,3 @@
+# Autonomous Research & Report Agent
+
+An autonomous multi-agent research system that uses specialized Research, Analysis, Writing, and Critic agents coordinated through LangGraph to investigate technology and market topics, synthesize cited evidence, self-evaluate the generated report, and perform targeted revisions when quality checks fail. The system uses Groq with a configurable primary/fallback LLM strategy, web research through DuckDuckGo, persistent report memory, and a FastAPI backend with a Streamlit interface for live workflow tracing.
