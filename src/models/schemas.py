@@ -31,6 +31,9 @@ class SearchResult(BaseModel):
     url: str
     snippet: str
 
+class SubQuestionPlan(BaseModel):
+    sub_questions: list[str]
+
 class Source(BaseModel):
     citation_id: int
     title: str

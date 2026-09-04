@@ -3,6 +3,7 @@ langchain==1.3.18
 langchain-core==1.6.1
 langchain-groq==1.1.3
 langgraph==1.2.11
+groq==0.37.1
 
 # Web Search / Web Content Retrieval
 ddgs==9.16.0
