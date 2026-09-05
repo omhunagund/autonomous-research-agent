@@ -20,9 +20,48 @@ from src.core.llm import get_llm_service
 from src.models.schemas import CritiqueCheck, QualityLevel, ResearchState
 
 
-def _research_node(state: ResearchState) -> dict:
+
+def _record_trace(
+    recorder,
+    state: ResearchState,
+    *,
+    stage: str,
+    event_type: str,
+    message: str,
+    attempt: int | None = None,
+) -> None:
+    if recorder is None or state.report_id is None:
+        return
+    recorder(
+        state.report_id,
+        stage=stage,
+        event_type=event_type,
+        message=message,
+        attempt=state.retry_count if attempt is None else attempt,
+    )
+
+
+def _research_node(state: ResearchState, recorder=None) -> dict:
+    _record_trace(
+        recorder, state, stage="research", event_type="research_started",
+        message="Research agent is generating sub-questions and gathering web evidence.",
+    )
     updated = run_research(state, get_llm_service())
+    _record_trace(
+        recorder, updated, stage="research", event_type="research_completed",
+        message=(
+            f"Research produced {len(updated.sub_questions)} sub-question(s) and "
+            f"{len(updated.sources)} unique usable source(s)."
+        ),
+    )
     analysis = analyze_research(updated, get_llm_service())
+    _record_trace(
+        recorder, analysis, stage="analysis", event_type="analysis_completed",
+        message=(
+            f"Analysis evaluated {len(analysis.findings)} finding(s), "
+            f"{len(analysis.gaps)} gap(s), and {len(analysis.conflicts)} conflict(s)."
+        ),
+    )
     return {
         "sub_questions": updated.sub_questions,
         "sources": updated.sources,
@@ -33,12 +72,32 @@ def _research_node(state: ResearchState) -> dict:
     }
 
 
-def _writing_node(state: ResearchState) -> dict:
-    return {"draft": write_report(state, get_llm_service())}
+def _writing_node(state: ResearchState, recorder=None) -> dict:
+    _record_trace(
+        recorder, state, stage="writing", event_type="writing_started",
+        message="Writing agent is composing the cited research report.",
+    )
+    report = write_report(state, get_llm_service())
+    _record_trace(
+        recorder, state, stage="writing", event_type="writing_completed",
+        message="Writing agent completed the current report draft.",
+    )
+    return {"draft": report}
 
 
-def _critic_node(state: ResearchState) -> dict:
+def _critic_node(state: ResearchState, recorder=None) -> dict:
+    _record_trace(
+        recorder, state, stage="critic", event_type="critic_review_started",
+        message="Critic is reviewing faithfulness, coverage, recency, and balance.",
+    )
     critique, target = critique_report(state, get_llm_service())
+    _record_trace(
+        recorder, state, stage="critic", event_type="critic_review_completed",
+        message=(
+            f"Critic verdict: {critique.verdict.value.upper()}; "
+            f"correction target: {target}."
+        ),
+    )
     return {"critique": critique, "revision_target": target}
 
 
@@ -60,10 +119,18 @@ def _route_after_critic(state: ResearchState) -> str:
     return "unresolved_finalize"
 
 
-def _research_correction_node(state: ResearchState) -> dict:
+def _research_correction_node(state: ResearchState, recorder=None) -> dict:
     if state.critique is None:
         raise RuntimeError("Research correction requires the latest Critique")
 
+    _record_trace(
+        recorder, state, stage="orchestrator", event_type="research_correction_started",
+        message=(
+            f"Starting targeted Research correction cycle {state.retry_count + 1} "
+            "from the latest Critic issues."
+        ),
+        attempt=state.retry_count + 1,
+    )
     research_issues = [
         issue for issue in state.critique.issues if issue.startswith("[RESEARCH]")
     ]
@@ -83,6 +150,15 @@ def _research_correction_node(state: ResearchState) -> dict:
             "revision_target": None,
         }
     )
+    _record_trace(
+        recorder, refreshed, stage="orchestrator",
+        event_type="research_correction_completed",
+        message=(
+            f"Research correction cycle {refreshed.retry_count} completed; "
+            f"current evidence contains {len(refreshed.sources)} usable source(s)."
+        ),
+        attempt=refreshed.retry_count,
+    )
     return {
         "retry_count": refreshed.retry_count,
         "sources": refreshed.sources,
@@ -93,10 +169,18 @@ def _research_correction_node(state: ResearchState) -> dict:
     }
 
 
-def _writing_correction_node(state: ResearchState) -> dict:
+def _writing_correction_node(state: ResearchState, recorder=None) -> dict:
     if state.critique is None:
         raise RuntimeError("Writing correction requires the latest Critique")
 
+    _record_trace(
+        recorder, state, stage="orchestrator", event_type="writing_correction_started",
+        message=(
+            f"Starting targeted Writing correction cycle {state.retry_count + 1} "
+            "from the latest Critic issues."
+        ),
+        attempt=state.retry_count + 1,
+    )
     writing_issues = [
         issue for issue in state.critique.issues if issue.startswith("[WRITING]")
     ]
@@ -105,16 +189,32 @@ def _writing_correction_node(state: ResearchState) -> dict:
         get_llm_service(),
         correction_issues=writing_issues,
     )
+    _record_trace(
+        recorder, state, stage="orchestrator",
+        event_type="writing_correction_completed",
+        message="Writing correction completed and produced a revised draft.",
+        attempt=state.retry_count + 1,
+    )
     return {"retry_count": state.retry_count + 1, "draft": report}
 
 
-def _finalize_pass(state: ResearchState) -> dict:
+def _finalize_pass(state: ResearchState, recorder=None) -> dict:
     quality = QualityLevel.HIGH if state.retry_count == 0 else QualityLevel.MEDIUM
+    _record_trace(
+        recorder, state, stage="orchestrator", event_type="final_report_completed",
+        message=f"Workflow passed Critic review; final quality is {quality.value}.",
+        attempt=state.retry_count,
+    )
     finalized = _set_final_quality(state, quality)
     return {"draft": finalized.draft, "final_report": finalized.final_report, "revision_target": "none"}
 
 
-def _finalize_analysis(state: ResearchState) -> dict:
+def _finalize_analysis(state: ResearchState, recorder=None) -> dict:
+    _record_trace(
+        recorder, state, stage="orchestrator", event_type="final_report_completed",
+        message="Workflow finalized after an analysis-only Critic failure; quality is low.",
+        attempt=state.retry_count,
+    )
     finalized = _finalize_analysis_only(state, state.critique)  # type: ignore[arg-type]
     return {
         "draft": finalized.draft,
@@ -123,7 +223,12 @@ def _finalize_analysis(state: ResearchState) -> dict:
     }
 
 
-def _finalize_unresolved_node(state: ResearchState) -> dict:
+def _finalize_unresolved_node(state: ResearchState, recorder=None) -> dict:
+    _record_trace(
+        recorder, state, stage="orchestrator", event_type="final_report_completed",
+        message="Workflow reached the correction-cycle limit; final quality is low.",
+        attempt=state.retry_count,
+    )
     finalized = _finalize_unresolved(state, state.critique)  # type: ignore[arg-type]
     return {
         "draft": finalized.draft,
@@ -132,18 +237,30 @@ def _finalize_unresolved_node(state: ResearchState) -> dict:
     }
 
 
-def build_workflow():
+def build_workflow(trace_recorder=None):
     """Build the bounded Research -> Analysis -> Writing -> Critic graph."""
     graph = StateGraph(ResearchState)
 
-    graph.add_node("research", _research_node)
-    graph.add_node("writing", _writing_node)
-    graph.add_node("critic", _critic_node)
-    graph.add_node("research_correction", _research_correction_node)
-    graph.add_node("writing_correction", _writing_correction_node)
-    graph.add_node("finalize_pass", _finalize_pass)
-    graph.add_node("finalize_analysis", _finalize_analysis)
-    graph.add_node("finalize_unresolved", _finalize_unresolved_node)
+    graph.add_node("research", lambda state: _research_node(state, trace_recorder))
+    graph.add_node("writing", lambda state: _writing_node(state, trace_recorder))
+    graph.add_node("critic", lambda state: _critic_node(state, trace_recorder))
+    graph.add_node(
+        "research_correction",
+        lambda state: _research_correction_node(state, trace_recorder),
+    )
+    graph.add_node(
+        "writing_correction",
+        lambda state: _writing_correction_node(state, trace_recorder),
+    )
+    graph.add_node("finalize_pass", lambda state: _finalize_pass(state, trace_recorder))
+    graph.add_node(
+        "finalize_analysis",
+        lambda state: _finalize_analysis(state, trace_recorder),
+    )
+    graph.add_node(
+        "finalize_unresolved",
+        lambda state: _finalize_unresolved_node(state, trace_recorder),
+    )
 
     graph.add_edge(START, "research")
     graph.add_edge("research", "writing")

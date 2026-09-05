@@ -178,6 +178,7 @@ class ResearchLimitation(BaseModel):
 
 
 class ResearchState(BaseModel):
+    report_id: str | None = None
     user_topic: str
     memory_context: MemoryContext | None
     sub_questions: list[str]
