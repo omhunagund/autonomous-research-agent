@@ -94,6 +94,34 @@ class Analysis(BaseModel):
     gaps: list[Gap]
 
 
+class WrittenFindingDraft(BaseModel):
+    text: str
+    citation_ids: list[int]
+
+
+class WrittenEvidenceDraft(BaseModel):
+    text: str
+    citation_ids: list[int]
+    related_finding_indices: list[int]
+
+
+class WrittenGapDraft(BaseModel):
+    text: str
+
+
+class WrittenConflictDraft(BaseModel):
+    text: str
+
+
+class InternalReportDraft(BaseModel):
+    executive_summary: str
+    finding_drafts: list[WrittenFindingDraft]
+    evidence_drafts: list[WrittenEvidenceDraft]
+    gap_drafts: list[WrittenGapDraft]
+    conflict_drafts: list[WrittenConflictDraft]
+    cited_source_ids: list[int]
+
+
 class Critique(BaseModel):
     faithfulness: CritiqueCheck
     coverage: CritiqueCheck
@@ -109,8 +137,10 @@ class FinalReport(BaseModel):
     key_findings: list[Finding]
     supporting_evidence: list[str]
     gaps: list[Gap]
+    gap_explanations: list[str]
     conflicts: list[Conflict]
-    quality: QualityLevel
+    conflict_explanations: list[str]
+    quality: QualityLevel | None = None
     references: list[Source]
 
 

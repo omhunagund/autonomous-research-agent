@@ -1,0 +1,381 @@
+"""Writing Agent for the autonomous research and report workflow.
+
+The Writer is a controlled presentation layer:
+- the LLM writes only prose and citation placement;
+- Analysis-derived structured fields remain authoritative;
+- deterministic validation enforces citation/reference integrity and
+  positional preservation;
+- report quality is deliberately left unset for the Critic/Orchestrator.
+"""
+
+from __future__ import annotations
+
+import re
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from src.core.llm import LLMService
+from src.models.schemas import (
+    FinalReport,
+    InternalReportDraft,
+    ResearchState,
+    Source,
+)
+
+
+WRITING_RETRY_LIMIT = 2
+VALID_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+ANY_BRACKET_PATTERN = re.compile(r"\[([^\]]*)\]")
+
+
+class WritingValidationError(RuntimeError):
+    """Raised when a Writer response fails deterministic validation."""
+
+
+def _parse_citations(text: str) -> list[int]:
+    """Parse only approved [n] citation tokens from text."""
+    return [int(match.group(1)) for match in VALID_CITATION_PATTERN.finditer(text)]
+
+
+def _has_invalid_bracket_citation(text: str) -> bool:
+    """Reject bracket groups that look like citations but are not exactly [n]."""
+    for match in ANY_BRACKET_PATTERN.finditer(text):
+        content = match.group(1).strip()
+        if not content:
+            continue
+        if content.isdigit():
+            continue
+        # The Writer's citation syntax is deliberately restricted to [n].
+        if "," in content or re.fullmatch(r"\d+(?:\s+\d+)+", content):
+            return True
+    return False
+
+
+def _unique_in_order(values: list[int]) -> list[int]:
+    seen: set[int] = set()
+    result: list[int] = []
+
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+
+    return result
+
+
+def _validate_declared_citations(
+    *,
+    text: str,
+    declared: list[int],
+    valid_source_ids: set[int],
+    context: str,
+) -> tuple[bool, str]:
+    if _has_invalid_bracket_citation(text):
+        return False, (
+            f"{context} contains invalid citation syntax; use only [n] or [n][m]"
+        )
+
+    parsed = _parse_citations(text)
+    unique_parsed = _unique_in_order(parsed)
+
+    if unique_parsed != declared:
+        return (
+            False,
+            f"{context} citation_ids must equal unique citation IDs parsed from "
+            "text in first-appearance order",
+        )
+
+    if len(set(declared)) != len(declared):
+        return False, f"{context} citation_ids must be unique"
+
+    unknown = sorted(set(declared) - valid_source_ids)
+    if unknown:
+        return False, f"{context} contains unknown citation IDs: {unknown}"
+
+    return True, ""
+
+
+def _all_text_fields(draft: InternalReportDraft) -> list[str]:
+    texts = [draft.executive_summary]
+    texts.extend(item.text for item in draft.finding_drafts)
+    texts.extend(item.text for item in draft.evidence_drafts)
+    texts.extend(item.text for item in draft.gap_drafts)
+    texts.extend(item.text for item in draft.conflict_drafts)
+    return texts
+
+
+def _validate_internal_report_draft(
+    draft: InternalReportDraft,
+    state: ResearchState,
+) -> tuple[bool, str]:
+    source_ids = {source.citation_id for source in state.sources}
+    finding_count = len(state.findings)
+    gap_count = len(state.gaps)
+    conflict_count = len(state.conflicts)
+
+    # Upstream Analysis invariant: every Finding must already be evidence-grounded.
+    for finding_index, finding in enumerate(state.findings, start=1):
+        if not finding.supporting_sources:
+            return False, (
+                f"Analysis finding {finding_index} has no supporting_sources; "
+                "Writer refuses to repair an upstream Analysis integrity violation"
+            )
+        unknown = sorted(set(finding.supporting_sources) - source_ids)
+        if unknown:
+            return False, (
+                f"Analysis finding {finding_index} references unknown source IDs: "
+                f"{unknown}"
+            )
+
+    if len(draft.finding_drafts) != finding_count:
+        return False, "finding_drafts count must equal Analysis.findings count"
+
+    if len(draft.gap_drafts) != gap_count:
+        return False, "gap_drafts count must equal Analysis.gaps count"
+
+    if len(draft.conflict_drafts) != conflict_count:
+        return False, "conflict_drafts count must equal Analysis.conflicts count"
+
+    if finding_count and not draft.evidence_drafts:
+        return False, (
+            "supporting evidence must contain at least one entry when findings exist"
+        )
+
+    for index, (finding, finding_draft) in enumerate(
+        zip(state.findings, draft.finding_drafts),
+        start=1,
+    ):
+        if not finding_draft.text.strip():
+            return False, f"finding draft {index} has empty text"
+
+        valid, reason = _validate_declared_citations(
+            text=finding_draft.text,
+            declared=finding_draft.citation_ids,
+            valid_source_ids=source_ids,
+            context=f"finding draft {index}",
+        )
+        if not valid:
+            return False, reason
+
+        if not finding_draft.citation_ids:
+            return False, f"finding draft {index} must contain at least one citation"
+
+        unauthorized = sorted(
+            set(finding_draft.citation_ids) - set(finding.supporting_sources)
+        )
+        if unauthorized:
+            return False, (
+                f"finding draft {index} cites sources outside its approved "
+                f"supporting_sources: {unauthorized}"
+            )
+
+    for index, evidence_draft in enumerate(draft.evidence_drafts, start=1):
+        if not evidence_draft.text.strip():
+            return False, f"evidence draft {index} has empty text"
+
+        valid, reason = _validate_declared_citations(
+            text=evidence_draft.text,
+            declared=evidence_draft.citation_ids,
+            valid_source_ids=source_ids,
+            context=f"evidence draft {index}",
+        )
+        if not valid:
+            return False, reason
+
+        for finding_index in evidence_draft.related_finding_indices:
+            if not 1 <= finding_index <= finding_count:
+                return False, (
+                    f"evidence draft {index} references invalid finding index "
+                    f"{finding_index}"
+                )
+
+        if evidence_draft.related_finding_indices:
+            allowed: set[int] = set()
+            for finding_index in evidence_draft.related_finding_indices:
+                allowed.update(state.findings[finding_index - 1].supporting_sources)
+
+            unauthorized = sorted(set(evidence_draft.citation_ids) - allowed)
+            if unauthorized:
+                return False, (
+                    f"evidence draft {index} cites sources unrelated to its "
+                    f"declared findings: {unauthorized}"
+                )
+
+    for index, gap_draft in enumerate(draft.gap_drafts, start=1):
+        if not gap_draft.text.strip():
+            return False, f"gap draft {index} has empty text"
+
+    for index, conflict_draft in enumerate(draft.conflict_drafts, start=1):
+        if not conflict_draft.text.strip():
+            return False, f"conflict draft {index} has empty text"
+
+    report_citations = _unique_in_order(
+        citation
+        for text in _all_text_fields(draft)
+        for citation in _parse_citations(text)
+    )
+
+    if report_citations != draft.cited_source_ids:
+        return False, (
+            "cited_source_ids must equal unique citation IDs parsed from all "
+            "Writer-generated text in first-appearance order"
+        )
+
+    if len(set(draft.cited_source_ids)) != len(draft.cited_source_ids):
+        return False, "cited_source_ids must be unique"
+
+    unknown_report_citations = sorted(set(draft.cited_source_ids) - source_ids)
+    if unknown_report_citations:
+        return False, (
+            "cited_source_ids contains unknown citation IDs: "
+            f"{unknown_report_citations}"
+        )
+
+    return True, ""
+
+
+def _writing_messages(state: ResearchState, feedback: str | None = None) -> list:
+    system = (
+        "You are the Writing Agent in an autonomous research and report "
+        "system. You are a controlled presentation layer, not a new research "
+        "or reasoning agent. Use only the supplied Analysis and freshly "
+        "retrieved Source evidence. Never introduce a new factual claim "
+        "absent from Analysis. Never change, reorder, remove, or reinterpret "
+        "Analysis Findings, Gaps, or Conflicts. For each Finding, generate "
+        "only text and citation_ids. The original claim, supporting_sources, "
+        "and confidence are immutable and are not writable. Use only approved "
+        "inline citation syntax: [1] or [1][3]. Cite at least one source for "
+        "every Finding. Cite each factual statement at the smallest practical "
+        "unit. Evidence drafts may reference multiple Findings with "
+        "1-based related_finding_indices or may have an empty relationship "
+        "for contextual evidence. When Findings are referenced, evidence "
+        "citations must come only from those Findings' supporting_sources. "
+        "Represent every Analysis gap and conflict exactly once, in order. "
+        "Do not create new gaps or conflicts. Keep their structured meaning "
+        "unchanged. Material gaps and conflicts must remain visible. "
+        "Executive-summary factual statements require citations. Memory is "
+        "planning context only and never evidence. Do not assign report quality."
+    )
+
+    findings_context = "\n".join(
+        (
+            f"{index}. claim={finding.claim!r}; "
+            f"supporting_sources={finding.supporting_sources}; "
+            f"confidence={finding.confidence.value}"
+        )
+        for index, finding in enumerate(state.findings, start=1)
+    ) or "No Findings."
+
+    gaps_context = "\n".join(
+        (
+            f"{index}. type={gap.type.value}; description={gap.description!r}; "
+            f"related_sub_question={gap.related_sub_question!r}; "
+            f"related_claim={gap.related_claim!r}"
+        )
+        for index, gap in enumerate(state.gaps, start=1)
+    ) or "No Gaps."
+
+    conflicts_context = "\n".join(
+        (
+            f"{index}. description={conflict.description!r}; "
+            f"related_sources={conflict.related_sources}"
+        )
+        for index, conflict in enumerate(state.conflicts, start=1)
+    ) or "No Conflicts."
+
+    sources_context = "\n\n---\n\n".join(
+        (
+            f"Source [{source.citation_id}]\n"
+            f"Title: {source.title}\n"
+            f"URL: {source.url}\n"
+            f"Content:\n{source.content}"
+        )
+        for source in state.sources
+    ) or "No sources."
+
+    user = (
+        f"Research topic:\n{state.user_topic}\n\n"
+        f"Sub-questions:\n"
+        + "\n".join(f"- {question}" for question in state.sub_questions)
+        + "\n\n"
+        f"Analysis Findings (preserve order and immutable fields):\n{findings_context}\n\n"
+        f"Analysis Gaps (preserve order and fields):\n{gaps_context}\n\n"
+        f"Analysis Conflicts (preserve order and fields):\n{conflicts_context}\n\n"
+        f"Fresh source evidence:\n{sources_context}"
+    )
+
+    if feedback:
+        user += (
+            "\n\nThe previous structured Writer response failed deterministic "
+            f"validation. Fix this exact issue: {feedback}. Return only the "
+            "corrected structured draft."
+        )
+
+    return [SystemMessage(content=system), HumanMessage(content=user)]
+
+
+def build_final_report(
+    state: ResearchState,
+    draft: InternalReportDraft,
+) -> FinalReport:
+    """Assemble a provisional report; quality intentionally remains unset."""
+    source_by_id = {source.citation_id: source for source in state.sources}
+
+    references = [
+        source_by_id[citation_id]
+        for citation_id in sorted(draft.cited_source_ids)
+    ]
+
+    return FinalReport(
+        topic=state.user_topic,
+        executive_summary=draft.executive_summary.strip(),
+        key_findings=list(state.findings),
+        supporting_evidence=[
+            item.text.strip() for item in draft.evidence_drafts
+        ],
+        gaps=list(state.gaps),
+        gap_explanations=[item.text.strip() for item in draft.gap_drafts],
+        conflicts=list(state.conflicts),
+        conflict_explanations=[
+            item.text.strip() for item in draft.conflict_drafts
+        ],
+        quality=None,
+        references=references,
+    )
+
+
+def write_report(
+    state: ResearchState,
+    llm_service: LLMService,
+) -> FinalReport:
+    """Generate and validate a Writer draft, then assemble a provisional report."""
+    feedback: str | None = None
+
+    for attempt in range(WRITING_RETRY_LIMIT + 1):
+        draft = llm_service.invoke_structured(
+            _writing_messages(state, feedback),
+            InternalReportDraft,
+        )
+
+        valid, reason = _validate_internal_report_draft(draft, state)
+        if valid:
+            return build_final_report(state, draft)
+
+        if attempt == WRITING_RETRY_LIMIT:
+            break
+
+        feedback = reason
+
+    raise WritingValidationError(
+        "Unable to produce a valid report draft after "
+        f"{WRITING_RETRY_LIMIT} validation retries."
+    )
+
+
+def writing_node(state: ResearchState) -> dict:
+    """LangGraph-compatible Writing Agent node."""
+    from src.core.llm import get_llm_service
+
+    report = write_report(state, get_llm_service())
+
+    return {"draft": report}
