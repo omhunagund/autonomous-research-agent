@@ -34,6 +34,15 @@ class SearchResult(BaseModel):
 class SubQuestionPlan(BaseModel):
     sub_questions: list[str]
 
+class SearchSelection(BaseModel):
+    selected_indices: list[int]
+
+class SearchSelection(BaseModel):
+    selected_indices: list[int]
+
+class SearchSelection(BaseModel):
+    selected_indices: list[int]
+
 class Source(BaseModel):
     citation_id: int
     title: str
@@ -107,6 +116,13 @@ class MemoryContext(BaseModel):
     matches: list[MemoryMatch]
 
 
+class ResearchLimitation(BaseModel):
+    sub_question: str
+    usable_source_count: int
+    failed_candidate_count: int
+    description: str
+
+
 class ResearchState(BaseModel):
     user_topic: str
     memory_context: MemoryContext | None
@@ -115,6 +131,7 @@ class ResearchState(BaseModel):
     findings: list[Finding]
     conflicts: list[Conflict]
     gaps: list[Gap]
+    research_limitations: list[ResearchLimitation]
     draft: FinalReport | None
     critique: Critique | None
     retry_count: int
