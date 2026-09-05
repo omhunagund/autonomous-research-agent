@@ -31,17 +31,14 @@ class SearchResult(BaseModel):
     url: str
     snippet: str
 
+
 class SubQuestionPlan(BaseModel):
     sub_questions: list[str]
 
-class SearchSelection(BaseModel):
-    selected_indices: list[int]
 
 class SearchSelection(BaseModel):
     selected_indices: list[int]
 
-class SearchSelection(BaseModel):
-    selected_indices: list[int]
 
 class Source(BaseModel):
     citation_id: int
@@ -51,6 +48,7 @@ class Source(BaseModel):
     snippet: str
     search_queries: list[str]
     content: str
+
 
 class Finding(BaseModel):
     claim: str
@@ -68,6 +66,26 @@ class Gap(BaseModel):
     description: str
     related_sub_question: str | None = None
     related_claim: str | None = None
+
+
+class AgreementLevel(str, Enum):
+    AGREE = "agree"
+    PARTIAL = "partial"
+    UNCLEAR = "unclear"
+
+
+class InternalFindingAssessment(BaseModel):
+    claim: str
+    supporting_sources: list[int]
+    independent_sources: list[int]
+    agreement: AgreementLevel
+    conflict: bool
+
+
+class InternalAnalysis(BaseModel):
+    finding_assessments: list[InternalFindingAssessment]
+    conflicts: list[Conflict]
+    gaps: list[Gap]
 
 
 class Analysis(BaseModel):
