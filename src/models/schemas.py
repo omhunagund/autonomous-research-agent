@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ConfidenceLevel(str, Enum):
@@ -38,6 +38,10 @@ class SubQuestionPlan(BaseModel):
 
 class SearchSelection(BaseModel):
     selected_indices: list[int]
+
+
+class CorrectionQueryPlan(BaseModel):
+    queries: list[str]
 
 
 class Source(BaseModel):
@@ -137,11 +141,13 @@ class FinalReport(BaseModel):
     key_findings: list[Finding]
     supporting_evidence: list[str]
     gaps: list[Gap]
-    gap_explanations: list[str]
+    gap_explanations: list[str] = Field(default_factory=list)
     conflicts: list[Conflict]
-    conflict_explanations: list[str]
+    conflict_explanations: list[str] = Field(default_factory=list)
     quality: QualityLevel | None = None
     references: list[Source]
+    analysis_issues: list[str] = Field(default_factory=list)
+    unresolved_issues: list[str] = Field(default_factory=list)
 
 
 class StoredReport(BaseModel):

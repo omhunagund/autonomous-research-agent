@@ -262,6 +262,7 @@ def _attempt_candidates(
     source_by_url: dict[str, Source],
     ordered_sources: list[Source],
     citation_counter: list[int],
+    failed_urls: set[str] | None = None,
 ) -> ResearchLimitation:
     """Fetch candidate pages and return honest per-question accounting."""
     usable_urls: set[str] = set()
@@ -288,6 +289,8 @@ def _attempt_candidates(
             content = fetch_page_content(candidate.url)
         except PageFetchError:
             failed_count += 1
+            if failed_urls is not None:
+                failed_urls.add(candidate.url)
             continue
 
         _add_source(

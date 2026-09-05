@@ -234,7 +234,11 @@ def _validate_internal_report_draft(
     return True, ""
 
 
-def _writing_messages(state: ResearchState, feedback: str | None = None) -> list:
+def _writing_messages(
+    state: ResearchState,
+    feedback: str | None = None,
+    correction_issues: list[str] | None = None,
+) -> list:
     system = (
         "You are the Writing Agent in an autonomous research and report "
         "system. You are a controlled presentation layer, not a new research "
@@ -311,6 +315,14 @@ def _writing_messages(state: ResearchState, feedback: str | None = None) -> list
             "corrected structured draft."
         )
 
+    if correction_issues:
+        user += (
+            "\n\nCritic-driven Writing correction instructions. Correct these latest "
+            "issues only while preserving the immutable Analysis Findings, "
+            "Gaps, Conflicts, confidence values, and source relationships:\n"
+            + "\n".join(f"- {issue}" for issue in correction_issues)
+        )
+
     return [SystemMessage(content=system), HumanMessage(content=user)]
 
 
@@ -347,13 +359,14 @@ def build_final_report(
 def write_report(
     state: ResearchState,
     llm_service: LLMService,
+    correction_issues: list[str] | None = None,
 ) -> FinalReport:
     """Generate and validate a Writer draft, then assemble a provisional report."""
     feedback: str | None = None
 
     for attempt in range(WRITING_RETRY_LIMIT + 1):
         draft = llm_service.invoke_structured(
-            _writing_messages(state, feedback),
+            _writing_messages(state, feedback, correction_issues),
             InternalReportDraft,
         )
 
