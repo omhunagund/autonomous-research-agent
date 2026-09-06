@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import html
+import re
 from typing import Any
 
 import streamlit as st
@@ -136,6 +137,95 @@ def _configure_page() -> None:
         }
         .report-shell {
             max-width: 900px;
+        }
+        .report-section {
+            margin: 2rem 0 1.6rem;
+        }
+        .report-summary {
+            font-size: 1.02rem;
+            line-height: 1.75;
+            color: #1f2937;
+        }
+        .report-item {
+            padding: 0.95rem 1rem;
+            margin: 0.8rem 0;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #ffffff;
+        }
+        .report-item-title {
+            color: #111827;
+            font-weight: 650;
+            line-height: 1.55;
+        }
+        .confidence-badge, .type-badge {
+            display: inline-block;
+            margin-left: 0.5rem;
+            padding: 0.12rem 0.42rem;
+            border: 1px solid #d1d5db;
+            border-radius: 999px;
+            color: #4b5563;
+            background: #ffffff;
+            font-size: 0.74rem;
+            font-weight: 600;
+            vertical-align: middle;
+        }
+        .report-body {
+            margin-top: 0.45rem;
+            color: #374151;
+            line-height: 1.7;
+        }
+        .report-meta {
+            margin-top: 0.55rem;
+            color: #6b7280;
+            font-size: 0.84rem;
+            line-height: 1.55;
+        }
+        .report-link {
+            color: #374151;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .report-link:hover {
+            color: #111827;
+        }
+        .source-card {
+            scroll-margin-top: 1.25rem;
+            padding: 0.9rem 1rem;
+            margin: 0.7rem 0;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #fafafa;
+        }
+        .source-card:target {
+            border-color: #9ca3af;
+            box-shadow: 0 0 0 2px rgba(156, 163, 175, 0.15);
+            background: #f9fafb;
+        }
+        .source-number {
+            display: inline-block;
+            min-width: 1.65rem;
+            font-weight: 700;
+            color: #111827;
+        }
+        .relation-link {
+            display: inline-block;
+            margin-top: 0.55rem;
+            margin-right: 0.45rem;
+            padding: 0.15rem 0.42rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 999px;
+            color: #4b5563;
+            text-decoration: none;
+            font-size: 0.79rem;
+        }
+        .relation-link:hover {
+            border-color: #9ca3af;
+            color: #111827;
+        }
+        .report-empty {
+            color: #6b7280;
+            font-size: 0.92rem;
         }
         </style>
         """,
@@ -473,32 +563,162 @@ def _complete_live_workspace(client: ResearchAPIClient, report_id: str) -> None:
     _render_report(report)
 
 
+def _citation_links_html(text: str, valid_citations: set[int]) -> str:
+    """Escape report text and convert approved inline citations into anchors."""
+    escaped = html.escape(text or "")
+
+    def replace(match) -> str:
+        citation_id = int(match.group(1))
+        if citation_id not in valid_citations:
+            return match.group(0)
+        return (
+            f'<a class="report-link" href="#source-{citation_id}" '
+            f'aria-label="Open reference {citation_id}">[{citation_id}]</a>'
+        )
+
+    return re.sub(r"\[(\d+)\]", replace, escaped)
+
+
+def _source_lookup(sources: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Index report references by citation ID for safe citation rendering."""
+    return {int(source["citation_id"]): source for source in sources}
+
+
 def _render_report(report: dict[str, Any]) -> None:
     st.markdown('<div class="report-shell">', unsafe_allow_html=True)
+    references = report.get("references", [])
+    source_by_id = _source_lookup(references)
+    valid_citations = set(source_by_id)
+
+    st.markdown('<div class="report-section">', unsafe_allow_html=True)
     st.header("Executive Summary")
-    st.write(report["executive_summary"])
+    st.markdown(
+        f'<div class="report-summary">{_citation_links_html(report.get("executive_summary", ""), valid_citations)}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="report-section" id="findings-section">', unsafe_allow_html=True)
     st.header("Key Findings")
-    for index, finding in enumerate(report["key_findings"], start=1):
-        st.markdown(f"**{index}. {finding['claim']}**")
-        st.caption(f"Confidence: {finding['confidence']} · Sources: {', '.join(str(x) for x in finding['supporting_sources'])}")
+    findings = report.get("key_findings", [])
+    if not findings:
+        st.markdown('<div class="report-empty">No key findings.</div>', unsafe_allow_html=True)
+    for index, finding in enumerate(findings, start=1):
+        citations = [int(value) for value in finding.get("supporting_sources", []) if int(value) in valid_citations]
+        citation_html = " ".join(
+            f'<a class="report-link" href="#source-{citation}" aria-label="Open reference {citation}">[{citation}]</a>'
+            for citation in citations
+        )
+        badge = html.escape(str(finding.get("confidence", "")).capitalize())
+        st.markdown(
+            f'<div class="report-item" id="finding-{index}">'
+            f'<div class="report-item-title">{index}. {html.escape(str(finding.get("claim", "")))}'
+            f'<span class="confidence-badge">{badge}</span></div>'
+            f'<div class="report-meta">Supporting sources: {citation_html or "—"}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="report-section">', unsafe_allow_html=True)
     st.header("Supporting Evidence")
-    for index, evidence in enumerate(report["supporting_evidence"], start=1):
-        related = ", ".join(str(value) for value in evidence["related_finding_indices"])
-        st.markdown(f"**{index}.** {evidence['text']}  \nSupports Finding {related or '—'}")
+    evidence_items = report.get("supporting_evidence", [])
+    if not evidence_items:
+        st.markdown('<div class="report-empty">No supporting evidence entries.</div>', unsafe_allow_html=True)
+    for index, raw_evidence in enumerate(evidence_items, start=1):
+        if isinstance(raw_evidence, str):
+            evidence = {
+                "text": raw_evidence,
+                "citation_ids": [],
+                "related_finding_indices": [],
+            }
+        else:
+            evidence = raw_evidence
 
+        citation_ids = [
+            int(value) for value in evidence.get("citation_ids", []) if int(value) in valid_citations
+        ]
+        citation_html = " ".join(
+            f'<a class="report-link" href="#source-{citation}" aria-label="Open reference {citation}">[{citation}]</a>'
+            for citation in citation_ids
+        )
+        relationship_html = " ".join(
+            f'<a class="relation-link" href="#finding-{int(finding_index)}">Supports Finding {int(finding_index)}</a>'
+            for finding_index in evidence.get("related_finding_indices", [])
+            if 1 <= int(finding_index) <= len(findings)
+        )
+        body = _citation_links_html(str(evidence.get("text", "")), valid_citations)
+        metadata = relationship_html or "<span class=\"report-empty\">Contextual evidence</span>"
+        if citation_html:
+            metadata = f"{metadata}<br>Sources: {citation_html}"
+        st.markdown(
+            f'<div class="report-item">'
+            f'<div class="report-item-title">{index}. Supporting evidence</div>'
+            f'<div class="report-body">{body}</div>'
+            f'<div class="report-meta">{metadata}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="report-section">', unsafe_allow_html=True)
     st.header("Gaps")
-    for index, gap in enumerate(report["gaps"], start=1):
-        st.markdown(f"**{index}. [{gap['type']}]** {gap['description']}")
+    gaps = report.get("gaps", [])
+    gap_explanations = report.get("gap_explanations", [])
+    if not gaps:
+        st.markdown('<div class="report-empty">No identified gaps.</div>', unsafe_allow_html=True)
+    for index, gap in enumerate(gaps, start=1):
+        explanation = gap_explanations[index - 1] if index - 1 < len(gap_explanations) else ""
+        gap_type = html.escape(str(gap.get("type", "")).replace("_", " ").capitalize())
+        st.markdown(
+            f'<div class="report-item">'
+            f'<div class="report-item-title">{index}. {html.escape(str(gap.get("description", "")))}'
+            f'<span class="type-badge">{gap_type}</span></div>'
+            f'<div class="report-body">{html.escape(str(explanation))}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="report-section">', unsafe_allow_html=True)
     st.header("Conflicts")
-    for index, conflict in enumerate(report["conflicts"], start=1):
-        st.markdown(f"**{index}.** {conflict['description']}")
+    conflicts = report.get("conflicts", [])
+    conflict_explanations = report.get("conflict_explanations", [])
+    if not conflicts:
+        st.markdown('<div class="report-empty">No identified conflicts.</div>', unsafe_allow_html=True)
+    for index, conflict in enumerate(conflicts, start=1):
+        explanation = conflict_explanations[index - 1] if index - 1 < len(conflict_explanations) else ""
+        related_ids = [int(value) for value in conflict.get("related_sources", []) if int(value) in valid_citations]
+        citation_html = " ".join(
+            f'<a class="report-link" href="#source-{citation}" aria-label="Open reference {citation}">[{citation}]</a>'
+            for citation in related_ids
+        )
+        st.markdown(
+            f'<div class="report-item">'
+            f'<div class="report-item-title">{index}. {html.escape(str(conflict.get("description", "")))}</div>'
+            f'<div class="report-body">{html.escape(str(explanation))}</div>'
+            f'<div class="report-meta">Related sources: {citation_html or "—"}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="report-section">', unsafe_allow_html=True)
     st.header("References")
-    for source in report["references"]:
-        st.markdown(f"{source['citation_id']}. [{source['title']}]({source['url']})")
+    if not references:
+        st.markdown('<div class="report-empty">No references.</div>', unsafe_allow_html=True)
+    for source in references:
+        citation_id = int(source["citation_id"])
+        title = html.escape(str(source.get("title", "Untitled source")))
+        url = html.escape(str(source.get("url", "")), quote=True)
+        st.markdown(
+            f'<div class="source-card" id="source-{citation_id}">'
+            f'<span class="source-number">{citation_id}.</span> '
+            f'<a class="report-link" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 

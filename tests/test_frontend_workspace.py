@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from frontend.app import _current_stage, _event_completed
+from frontend.app import _citation_links_html, _current_stage, _event_completed, _source_lookup
 from frontend.models import TraceEvent
 
 
@@ -53,3 +53,28 @@ def test_current_stage_ignores_orchestrator_events() -> None:
 )
 def test_event_completed(stage: str, event_type: str, expected: bool) -> None:
     assert _event_completed([_event(stage, event_type)], stage) is expected
+
+
+def test_citation_links_render_only_approved_sources() -> None:
+    rendered = _citation_links_html(
+        "Claim [1] with [2] and [99] plus <unsafe>",
+        {1, 2},
+    )
+
+    assert 'href="#source-1"' in rendered
+    assert 'href="#source-2"' in rendered
+    assert "[99]" in rendered
+    assert "&lt;unsafe&gt;" in rendered
+    assert 'href="#source-99"' not in rendered
+
+
+def test_source_lookup_indexes_citation_ids() -> None:
+    sources = [
+        {"citation_id": 2, "title": "Second", "url": "https://example.com/2"},
+        {"citation_id": 1, "title": "First", "url": "https://example.com/1"},
+    ]
+
+    lookup = _source_lookup(sources)
+
+    assert list(lookup) == [2, 1]
+    assert lookup[1]["title"] == "First"
