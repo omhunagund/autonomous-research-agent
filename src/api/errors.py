@@ -56,6 +56,14 @@ class ResearchExecutionError(APIError):
         super().__init__(message, detail=detail, report_id=report_id)
 
 
+class ExecutionConflictError(APIError):
+    status_code = 409
+    error = "ConflictError"
+
+    def __init__(self, message: str = "The research execution cannot be started in its current state.", *, detail: str | None = None, report_id: str | None = None) -> None:
+        super().__init__(message, detail=detail, report_id=report_id)
+
+
 def error_payload(exc: APIError) -> dict[str, Any]:
     return {
         "error": exc.error,

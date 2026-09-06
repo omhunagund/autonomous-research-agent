@@ -7,10 +7,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
 
-from src.api.errors import APIError, PersistenceAPIError, ReportNotFoundError, UpstreamDependencyError
+from src.api.errors import APIError, ExecutionConflictError, PersistenceAPIError, ReportNotFoundError, UpstreamDependencyError
 from src.api.schemas import (
     ActiveExecution,
     ActiveResearchResponse,
+    ExecutionInitResponse,
+    ExecutionResponse,
     ExecutionStatus,
     HistoryItem,
     HistoryResponse,
@@ -20,7 +22,12 @@ from src.api.schemas import (
     TraceEventType,
     TraceResponse,
 )
-from src.core.execution import ResearchExecutionError, ResearchExecutionService
+from src.core.execution import (
+    ExecutionConflictError as CoreExecutionConflictError,
+    ExecutionNotFoundError,
+    ResearchExecutionError,
+    ResearchExecutionService,
+)
 from src.core.llm import LLMConfigurationError, LLMInvocationError
 from src.core.persistence import PersistenceError
 from src.tools.page_fetcher import PageFetchError
@@ -58,26 +65,65 @@ def _handle_execution_error(exc: ResearchExecutionError) -> APIError:
 
 
 @router.post(
-    "/research",
-    response_model=ResearchResponse,
+    "/research/init",
+    response_model=ExecutionInitResponse,
     status_code=status.HTTP_200_OK,
 )
-def create_research(
+def initialize_research(
     payload: ResearchRequest,
     service: ResearchExecutionService = Depends(get_execution_service),
-) -> ResearchResponse:
+) -> ExecutionInitResponse:
     try:
-        execution = service.run(payload.topic)
+        report_id = service.initialize(payload.topic)
+    except PersistenceError as exc:
+        logger.exception("Persistence failure while initializing research")
+        raise PersistenceAPIError() from exc
+    except Exception as exc:
+        logger.exception("Unexpected research initialization failure")
+        raise APIError(
+            "An unexpected internal error occurred.",
+            detail="The research request could not be initialized.",
+        ) from exc
+
+    return ExecutionInitResponse(
+        report_id=report_id,
+        status=ExecutionStatus.RUNNING,
+    )
+
+
+@router.post(
+    "/research/{report_id}/execute",
+    response_model=ExecutionResponse,
+    status_code=status.HTTP_200_OK,
+)
+def execute_research(
+    report_id: UUID,
+    service: ResearchExecutionService = Depends(get_execution_service),
+) -> ExecutionResponse:
+    report_id_str = str(report_id)
+    try:
+        execution = service.execute(report_id_str)
+    except ExecutionNotFoundError as exc:
+        raise ReportNotFoundError(exc.report_id) from exc
+    except CoreExecutionConflictError as exc:
+        raise ExecutionConflictError(
+            report_id=exc.report_id,
+            detail=(
+                "Each report_id can be executed only once; the existing execution "
+                f"is already {exc.status}."
+            ),
+        ) from exc
     except ResearchExecutionError as exc:
         raise _handle_execution_error(exc) from exc
     except PersistenceError as exc:
-        logger.exception("Persistence failure while starting research")
-        raise PersistenceAPIError() from exc
+        logger.exception("Persistence failure while executing research %s", report_id_str)
+        raise PersistenceAPIError(report_id=report_id_str) from exc
     except Exception as exc:
         logger.exception("Unexpected research execution failure")
         raise APIError(
             "An unexpected internal error occurred.",
             detail="The research request could not be completed.",
+            report_id=report_id_str,
         ) from exc
 
     if execution.report.report is None:
@@ -87,7 +133,10 @@ def create_research(
             report_id=execution.report_id,
         )
 
-    return ResearchResponse(report_id=execution.report_id, report=execution.report.report)
+    return ExecutionResponse(
+        report_id=execution.report_id,
+        status=ExecutionStatus.COMPLETED,
+    )
 
 
 @router.get(

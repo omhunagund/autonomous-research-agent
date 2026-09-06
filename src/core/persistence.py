@@ -202,6 +202,17 @@ class SQLitePersistence:
         except sqlite3.Error as exc:
             raise PersistenceError(f"Unable to mark report {report_id} as failed: {exc}") from exc
 
+    def get_execution_topic(self, report_id: str) -> str | None:
+        """Return the persisted topic for an execution id, or None if unknown."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT topic FROM reports WHERE report_id = ?", (report_id,)
+                ).fetchone()
+            return None if row is None else str(row["topic"])
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"Unable to read execution topic: {exc}") from exc
+
     def get_execution_status(self, report_id: str) -> str | None:
         try:
             with self._connect() as connection:

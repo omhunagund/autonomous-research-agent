@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from src.api.main import app
-from src.core.execution import ResearchExecution, ResearchExecutionError
+from src.core.execution import ExecutionConflictError, ExecutionNotFoundError, ResearchExecution, ResearchExecutionError
 from src.core.persistence import ExecutionEvent, SQLitePersistence
 from src.models.schemas import FinalReport, StoredReport, QualityLevel
 
@@ -32,11 +32,7 @@ class FakeService:
     def __init__(self, tmp_path: Path) -> None:
         self.persistence = SQLitePersistence(tmp_path / "research.db")
         self.report_id = self.persistence.create_report("Test topic")
-        stored = self.persistence.save_report(
-            self.report_id,
-            _report("Test topic"),
-        )
-
+        stored = self.persistence.save_report(self.report_id, _report("Test topic"))
         self.persistence.record_event(
             self.report_id,
             stage="research",
@@ -44,7 +40,6 @@ class FakeService:
             message="Research Agent started.",
             attempt=1,
         )
-
         self.persistence.record_event(
             self.report_id,
             stage="orchestrator",
@@ -52,14 +47,16 @@ class FakeService:
             message="Research execution completed successfully with high quality.",
             attempt=1,
         )
-
         self.stored = stored
 
-    def run(self, topic: str) -> ResearchExecution:
+    def initialize(self, topic: str) -> str:
+        return self.report_id
+
+    def execute(self, report_id: str) -> ResearchExecution:
         return ResearchExecution(
-            report_id=self.report_id,
+            report_id=report_id,
             report=self.stored,
-            memory_context=self.persistence.find_memory(topic),
+            memory_context=self.persistence.find_memory(self.stored.topic),
             trace=self.persistence.get_trace(self.report_id),
         )
 
@@ -86,20 +83,39 @@ def test_health_returns_ok(tmp_path: Path) -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_research_response_shape(tmp_path: Path) -> None:
+def test_research_init_response_shape(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    with _client(service) as client:
+        response = client.post("/research/init", json={"topic": "another topic"})
+    assert response.status_code == 200
+    assert response.json() == {
+        "report_id": service.report_id,
+        "status": "running",
+    }
+
+
+def test_research_execute_response_shape(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    with _client(service) as client:
+        response = client.post(f"/research/{service.report_id}/execute")
+    assert response.status_code == 200
+    assert response.json() == {
+        "report_id": service.report_id,
+        "status": "completed",
+    }
+
+
+def test_legacy_research_endpoint_is_removed(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     with _client(service) as client:
         response = client.post("/research", json={"topic": "another topic"})
-    assert response.status_code == 200
-    body = response.json()
-    assert set(body) == {"report_id", "report"}
-    assert body["report"]["quality"] == "high"
+    assert response.status_code == 404
 
 
 def test_blank_topic_returns_structured_422(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     with _client(service) as client:
-        response = client.post("/research", json={"topic": "   "})
+        response = client.post("/research/init", json={"topic": "   "})
     assert response.status_code == 422
     body = response.json()
     assert body["error"] == "ValidationError"
@@ -226,7 +242,6 @@ def test_trace_returns_status_and_events(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     with _client(service) as client:
         response = client.get(f"/research/{service.report_id}/trace")
-
     assert response.status_code == 200
     body = response.json()
     assert body["report_id"] == service.report_id
@@ -248,13 +263,13 @@ def test_trace_unknown_id_returns_404(tmp_path: Path) -> None:
 
 def test_research_execution_upstream_failure_returns_502_with_report_id(tmp_path: Path) -> None:
     class FailingService(FakeService):
-        def run(self, topic: str) -> ResearchExecution:
+        def execute(self, report_id: str) -> ResearchExecution:
             from src.core.llm import LLMInvocationError
             raise ResearchExecutionError(self.report_id, LLMInvocationError("provider failed"))
 
     service = FailingService(tmp_path)
     with _client(service) as client:
-        response = client.post("/research", json={"topic": "test"})
+        response = client.post(f"/research/{service.report_id}/execute")
     assert response.status_code == 502
     body = response.json()
     assert body["error"] == "UpstreamDependencyError"
@@ -263,16 +278,51 @@ def test_research_execution_upstream_failure_returns_502_with_report_id(tmp_path
 
 def test_research_execution_unexpected_failure_returns_500_with_report_id(tmp_path: Path) -> None:
     class FailingService(FakeService):
-        def run(self, topic: str) -> ResearchExecution:
+        def execute(self, report_id: str) -> ResearchExecution:
             raise ResearchExecutionError(self.report_id, RuntimeError("unexpected"))
 
     service = FailingService(tmp_path)
     with _client(service) as client:
-        response = client.post("/research", json={"topic": "test"})
+        response = client.post(f"/research/{service.report_id}/execute")
     assert response.status_code == 500
     body = response.json()
     assert body["error"] == "InternalServerError"
     assert body["report_id"] == service.report_id
+
+
+def test_research_execute_conflict_returns_409(tmp_path: Path) -> None:
+    class ConflictService(FakeService):
+        def execute(self, report_id: str) -> ResearchExecution:
+            raise ExecutionConflictError(report_id, "running")
+
+    service = ConflictService(tmp_path)
+    with _client(service) as client:
+        response = client.post(f"/research/{service.report_id}/execute")
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "ConflictError"
+    assert body["report_id"] == service.report_id
+
+
+def test_research_execute_unknown_id_returns_404(tmp_path: Path) -> None:
+    class MissingService(FakeService):
+        def execute(self, report_id: str) -> ResearchExecution:
+            raise ExecutionNotFoundError(report_id)
+
+    service = MissingService(tmp_path)
+    report_id = "550e8400-e29b-41d4-a716-446655440000"
+    with _client(service) as client:
+        response = client.post(f"/research/{report_id}/execute")
+    assert response.status_code == 404
+    assert response.json()["error"] == "ReportNotFound"
+
+
+def test_research_execute_malformed_id_returns_422(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    with _client(service) as client:
+        response = client.post("/research/not-a-uuid/execute")
+    assert response.status_code == 422
+    assert response.json()["error"] == "ValidationError"
 
 
 def test_history_is_empty_without_completed_reports(tmp_path: Path) -> None:

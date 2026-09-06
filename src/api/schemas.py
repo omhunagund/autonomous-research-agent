@@ -55,6 +55,16 @@ class ActiveResearchResponse(BaseModel):
     executions: list[ActiveExecution]
 
 
+class ExecutionInitResponse(BaseModel):
+    report_id: str
+    status: ExecutionStatus
+
+
+class ExecutionResponse(BaseModel):
+    report_id: str
+    status: ExecutionStatus
+
+
 class TraceEventType(str, Enum):
     EXECUTION_STARTED = "execution_started"
     MEMORY_MATCHES_FOUND = "memory_matches_found"

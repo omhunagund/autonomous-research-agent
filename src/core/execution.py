@@ -4,12 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from threading import Lock
 
 from src.core.persistence import ExecutionEvent, PersistenceError, SQLitePersistence
 from src.models.schemas import FinalReport, MemoryContext, ResearchState, StoredReport
 from src.workflow import build_workflow
 
 logger = logging.getLogger(__name__)
+
+
+class ExecutionConflictError(RuntimeError):
+    """Raised when an execution has already started or finished."""
+
+    def __init__(self, report_id: str, status: str) -> None:
+        super().__init__(f"Research execution {report_id} is already in state {status!r}.")
+        self.report_id = report_id
+        self.status = status
+
+
+class ExecutionNotFoundError(RuntimeError):
+    """Raised when an execution id does not exist."""
+
+    def __init__(self, report_id: str) -> None:
+        super().__init__(f"Research execution {report_id} was not found.")
+        self.report_id = report_id
 
 
 class ResearchExecutionError(RuntimeError):
@@ -34,6 +52,8 @@ class ResearchExecutionService:
 
     def __init__(self, persistence: SQLitePersistence | None = None) -> None:
         self.persistence = persistence or SQLitePersistence()
+        self._execution_lock_guard = Lock()
+        self._active_execution_locks: set[str] = set()
 
     def close(self) -> None:
         """Release service-owned resources. SQLite connections are per-operation."""
@@ -77,9 +97,22 @@ class ResearchExecutionService:
             attempt=attempt,
         )
 
-    def run(self, topic: str) -> ResearchExecution:
-        # Q160/Q194: establish the persisted running execution first.
+    def _claim_execution(self, report_id: str) -> None:
+        with self._execution_lock_guard:
+            if report_id in self._active_execution_locks:
+                raise ExecutionConflictError(report_id, "running")
+            self._active_execution_locks.add(report_id)
+
+    def _release_execution(self, report_id: str) -> None:
+        with self._execution_lock_guard:
+            self._active_execution_locks.discard(report_id)
+
+    def initialize(self, topic: str) -> str:
+        """Create and persist a new running execution before any workflow work."""
         report_id = self.persistence.create_report(topic)
+        # Q194/Q195: the initial trace event is best-effort after the running
+        # record has been committed. A trace persistence failure must not abort
+        # an otherwise valid execution.
         self._record_trace_best_effort(
             report_id,
             stage="research",
@@ -87,9 +120,24 @@ class ResearchExecutionService:
             message="Research Agent started.",
             attempt=1,
         )
+        return report_id
 
+    def execute(self, report_id: str) -> ResearchExecution:
+        """Execute exactly one previously initialized running execution."""
+        self._claim_execution(report_id)
         try:
+            execution_status = self.persistence.get_execution_status(report_id)
+            if execution_status is None:
+                raise ExecutionNotFoundError(report_id)
+            if execution_status != "running":
+                raise ExecutionConflictError(report_id, execution_status)
+
+            # The persisted running record is the source of truth for the topic.
+            topic = self.persistence.get_execution_topic(report_id)
+            if topic is None:
+                raise ExecutionNotFoundError(report_id)
             memory = self.persistence.find_memory(topic)
+
             memory_message = (
                 f"Found {len(memory.matches)} relevant prior report(s) for context."
                 if memory.matches
@@ -127,7 +175,6 @@ class ResearchExecutionService:
             if final_state.final_report is None:
                 raise RuntimeError("Workflow completed without a final report")
 
-            # Q167/Q168: report + terminal completed status are persisted atomically.
             stored = self.persistence.save_report(report_id, final_state.final_report)
             self._record_trace_best_effort(
                 report_id,
@@ -142,7 +189,10 @@ class ResearchExecutionService:
                 memory_context=memory,
                 trace=self.persistence.get_trace(report_id),
             )
-
+        except (ExecutionConflictError, ExecutionNotFoundError):
+            raise
         except Exception as exc:
             self._mark_failed_best_effort(report_id, max(1, state.retry_count + 1) if "state" in locals() else 1)
             raise ResearchExecutionError(report_id, exc) from exc
+        finally:
+            self._release_execution(report_id)
