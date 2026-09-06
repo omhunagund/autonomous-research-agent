@@ -37,7 +37,7 @@ def _record_trace(
         stage=stage,
         event_type=event_type,
         message=message,
-        attempt=state.retry_count if attempt is None else attempt,
+        attempt=state.retry_count + 1 if attempt is None else attempt,
     )
 
 
@@ -124,7 +124,7 @@ def _research_correction_node(state: ResearchState, recorder=None) -> dict:
         raise RuntimeError("Research correction requires the latest Critique")
 
     _record_trace(
-        recorder, state, stage="orchestrator", event_type="research_correction_started",
+        recorder, state, stage="research", event_type="research_correction_started",
         message=(
             f"Starting targeted Research correction cycle {state.retry_count + 1} "
             "from the latest Critic issues."
@@ -151,7 +151,7 @@ def _research_correction_node(state: ResearchState, recorder=None) -> dict:
         }
     )
     _record_trace(
-        recorder, refreshed, stage="orchestrator",
+        recorder, refreshed, stage="research",
         event_type="research_correction_completed",
         message=(
             f"Research correction cycle {refreshed.retry_count} completed; "
@@ -174,7 +174,7 @@ def _writing_correction_node(state: ResearchState, recorder=None) -> dict:
         raise RuntimeError("Writing correction requires the latest Critique")
 
     _record_trace(
-        recorder, state, stage="orchestrator", event_type="writing_correction_started",
+        recorder, state, stage="writing", event_type="writing_correction_started",
         message=(
             f"Starting targeted Writing correction cycle {state.retry_count + 1} "
             "from the latest Critic issues."
@@ -190,7 +190,7 @@ def _writing_correction_node(state: ResearchState, recorder=None) -> dict:
         correction_issues=writing_issues,
     )
     _record_trace(
-        recorder, state, stage="orchestrator",
+        recorder, state, stage="writing",
         event_type="writing_correction_completed",
         message="Writing correction completed and produced a revised draft.",
         attempt=state.retry_count + 1,
@@ -200,21 +200,11 @@ def _writing_correction_node(state: ResearchState, recorder=None) -> dict:
 
 def _finalize_pass(state: ResearchState, recorder=None) -> dict:
     quality = QualityLevel.HIGH if state.retry_count == 0 else QualityLevel.MEDIUM
-    _record_trace(
-        recorder, state, stage="orchestrator", event_type="final_report_completed",
-        message=f"Workflow passed Critic review; final quality is {quality.value}.",
-        attempt=state.retry_count,
-    )
     finalized = _set_final_quality(state, quality)
     return {"draft": finalized.draft, "final_report": finalized.final_report, "revision_target": "none"}
 
 
 def _finalize_analysis(state: ResearchState, recorder=None) -> dict:
-    _record_trace(
-        recorder, state, stage="orchestrator", event_type="final_report_completed",
-        message="Workflow finalized after an analysis-only Critic failure; quality is low.",
-        attempt=state.retry_count,
-    )
     finalized = _finalize_analysis_only(state, state.critique)  # type: ignore[arg-type]
     return {
         "draft": finalized.draft,
@@ -224,11 +214,6 @@ def _finalize_analysis(state: ResearchState, recorder=None) -> dict:
 
 
 def _finalize_unresolved_node(state: ResearchState, recorder=None) -> dict:
-    _record_trace(
-        recorder, state, stage="orchestrator", event_type="final_report_completed",
-        message="Workflow reached the correction-cycle limit; final quality is low.",
-        attempt=state.retry_count,
-    )
     finalized = _finalize_unresolved(state, state.critique)  # type: ignore[arg-type]
     return {
         "draft": finalized.draft,
