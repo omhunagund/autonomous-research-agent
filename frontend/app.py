@@ -121,6 +121,34 @@ def _configure_page() -> None:
         .connector {
             color: #9ca3af;
         }
+        .trace-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin: 0.1rem 0 0.65rem;
+        }
+        .jump-latest {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.32rem 0.65rem;
+            border: 1px solid #d1d5db;
+            border-radius: 999px;
+            color: #374151 !important;
+            background: #ffffff;
+            text-decoration: none !important;
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+        .jump-latest:hover {
+            border-color: #9ca3af;
+            color: #111827 !important;
+            background: #f9fafb;
+        }
+        .trace-new-events {
+            color: #6b7280;
+            font-size: 0.82rem;
+        }
         .trace-row {
             display: flex;
             gap: 0.75rem;
@@ -255,6 +283,8 @@ def _initialize_state() -> None:
         "report_error": None,
         "polling_active": False,
         "new_research_requested": False,
+        "trace_seen_event_ids": tuple(),
+        "trace_has_new_events": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -283,6 +313,8 @@ def _start_research(client: ResearchAPIClient, topic: str) -> None:
     )
     st.session_state["current_report"] = None
     st.session_state["execution_error"] = None
+    st.session_state["trace_seen_event_ids"] = tuple()
+    st.session_state["trace_has_new_events"] = False
     st.session_state["report_error"] = None
     st.session_state["workspace_mode"] = "live"
     st.session_state["polling_active"] = True
@@ -398,6 +430,8 @@ def _select_active(client: ResearchAPIClient, item: ActiveExecution) -> None:
     st.session_state["report_error"] = None
     st.session_state["polling_active"] = True
     st.session_state["current_trace"] = None
+    st.session_state["trace_seen_event_ids"] = tuple()
+    st.session_state["trace_has_new_events"] = False
     try:
         st.session_state["current_trace"] = client.get_trace(item.report_id)
     except APIClientError as exc:
@@ -473,11 +507,39 @@ def _render_stepper(events: list[TraceEvent], attempt: int) -> None:
         st.caption(f"Current stage: {STAGE_LABELS[current]}")
 
 
+def _trace_event_signature(events: list[TraceEvent]) -> tuple[str, ...]:
+    """Return a stable session-state signature for chronological trace events."""
+    return tuple(event.event_id for event in events)
+
+
+def _jump_to_latest_html() -> str:
+    """Render a dependency-free browser anchor styled as a jump control."""
+    return (
+        '<a class="jump-latest" href="#trace-latest" '
+        'aria-label="Jump to the latest workflow trace event">↓ Jump to latest</a>'
+    )
+
+
 def _render_trace(events: list[TraceEvent]) -> None:
     st.subheader("Live workflow trace")
     if not events:
         st.caption("Waiting for the first workflow event…")
         return
+
+    current_signature = _trace_event_signature(events)
+    previous_signature = st.session_state.get("trace_seen_event_ids", tuple())
+    if previous_signature and current_signature != previous_signature:
+        st.session_state["trace_has_new_events"] = True
+    st.session_state["trace_seen_event_ids"] = current_signature
+
+    toolbar_parts = ['<div class="trace-toolbar">']
+    if st.session_state.get("trace_has_new_events"):
+        toolbar_parts.append('<span class="trace-new-events">New trace events are available below.</span>')
+    else:
+        toolbar_parts.append('<span></span>')
+    toolbar_parts.append(_jump_to_latest_html())
+    toolbar_parts.append('</div>')
+    st.markdown("".join(toolbar_parts), unsafe_allow_html=True)
 
     for event in events:
         st.markdown(
@@ -487,6 +549,12 @@ def _render_trace(events: list[TraceEvent]) -> None:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+    st.markdown('<div id="trace-latest"></div>', unsafe_allow_html=True)
+    if st.session_state.get("trace_has_new_events"):
+        if st.button("Mark as caught up", key="trace_caught_up", help="Hide the new-event notice until another trace event arrives."):
+            st.session_state["trace_has_new_events"] = False
+            st.rerun()
 
 
 def _render_live_workspace(client: ResearchAPIClient) -> None:

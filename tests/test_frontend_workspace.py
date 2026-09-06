@@ -5,7 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from frontend.app import _citation_links_html, _current_stage, _event_completed, _source_lookup
+from frontend.app import (
+    _citation_links_html,
+    _current_stage,
+    _event_completed,
+    _jump_to_latest_html,
+    _source_lookup,
+    _trace_event_signature,
+)
 from frontend.models import TraceEvent
 
 
@@ -78,3 +85,19 @@ def test_source_lookup_indexes_citation_ids() -> None:
 
     assert list(lookup) == [2, 1]
     assert lookup[1]["title"] == "First"
+
+
+def test_trace_event_signature_follows_event_order() -> None:
+    events = [
+        _event("research", "research_started"),
+        _event("analysis", "analysis_completed"),
+    ]
+    assert _trace_event_signature(events) == tuple(event.event_id for event in events)
+
+
+def test_jump_to_latest_uses_dependency_free_anchor() -> None:
+    rendered = _jump_to_latest_html()
+
+    assert 'href="#trace-latest"' in rendered
+    assert 'role="button"' not in rendered
+    assert "Jump to latest" in rendered
