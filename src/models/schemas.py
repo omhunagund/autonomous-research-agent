@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ConfidenceLevel(str, Enum):
@@ -117,6 +117,12 @@ class WrittenConflictDraft(BaseModel):
     text: str
 
 
+class SupportingEvidence(BaseModel):
+    text: str
+    citation_ids: list[int]
+    related_finding_indices: list[int]
+
+
 class InternalReportDraft(BaseModel):
     executive_summary: str
     finding_drafts: list[WrittenFindingDraft]
@@ -139,7 +145,7 @@ class FinalReport(BaseModel):
     topic: str
     executive_summary: str
     key_findings: list[Finding]
-    supporting_evidence: list[str]
+    supporting_evidence: list[SupportingEvidence]
     gaps: list[Gap]
     gap_explanations: list[str] = Field(default_factory=list)
     conflicts: list[Conflict]
@@ -148,6 +154,33 @@ class FinalReport(BaseModel):
     references: list[Source]
     analysis_issues: list[str] = Field(default_factory=list)
     unresolved_issues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_supporting_evidence(cls, data):
+        """Coerce pre-Phase-19 string evidence entries to the new structure."""
+        if not isinstance(data, dict):
+            return data
+
+        raw_evidence = data.get("supporting_evidence")
+        if isinstance(raw_evidence, list):
+            migrated = []
+            for item in raw_evidence:
+                if isinstance(item, str):
+                    migrated.append(
+                        {
+                            "text": item,
+                            "citation_ids": [],
+                            "related_finding_indices": [],
+                        }
+                    )
+                else:
+                    migrated.append(item)
+            updated = dict(data)
+            updated["supporting_evidence"] = migrated
+            return updated
+
+        return data
 
 
 class StoredReport(BaseModel):

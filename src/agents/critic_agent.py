@@ -210,7 +210,12 @@ def _draft_context(draft: FinalReport) -> str:
     ) or "No key findings."
 
     evidence = "\n".join(
-        f"- {entry}" for entry in draft.supporting_evidence
+        (
+            f"- {entry.text} "
+            f"(citation_ids={entry.citation_ids}; "
+            f"related_finding_indices={entry.related_finding_indices})"
+        )
+        for entry in draft.supporting_evidence
     ) or "No supporting evidence entries."
 
     gaps = "\n".join(

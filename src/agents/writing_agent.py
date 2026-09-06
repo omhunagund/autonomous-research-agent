@@ -20,6 +20,7 @@ from src.models.schemas import (
     InternalReportDraft,
     ResearchState,
     Source,
+    SupportingEvidence,
 )
 
 
@@ -343,7 +344,12 @@ def build_final_report(
         executive_summary=draft.executive_summary.strip(),
         key_findings=list(state.findings),
         supporting_evidence=[
-            item.text.strip() for item in draft.evidence_drafts
+            SupportingEvidence(
+                text=item.text.strip(),
+                citation_ids=list(item.citation_ids),
+                related_finding_indices=list(item.related_finding_indices),
+            )
+            for item in draft.evidence_drafts
         ],
         gaps=list(state.gaps),
         gap_explanations=[item.text.strip() for item in draft.gap_drafts],
