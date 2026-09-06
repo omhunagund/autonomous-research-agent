@@ -44,6 +44,17 @@ class ExecutionStatus(str, Enum):
     FAILED = "failed"
 
 
+class ActiveExecution(BaseModel):
+    report_id: str
+    topic: str
+    status: ExecutionStatus
+    attempt: int
+
+
+class ActiveResearchResponse(BaseModel):
+    executions: list[ActiveExecution]
+
+
 class TraceEventType(str, Enum):
     EXECUTION_STARTED = "execution_started"
     MEMORY_MATCHES_FOUND = "memory_matches_found"

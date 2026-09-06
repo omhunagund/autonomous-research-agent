@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, Request, status
 
 from src.api.errors import APIError, PersistenceAPIError, ReportNotFoundError, UpstreamDependencyError
 from src.api.schemas import (
+    ActiveExecution,
+    ActiveResearchResponse,
     ExecutionStatus,
     HistoryItem,
     HistoryResponse,
@@ -86,6 +88,33 @@ def create_research(
         )
 
     return ResearchResponse(report_id=execution.report_id, report=execution.report.report)
+
+
+@router.get(
+    "/research/active",
+    response_model=ActiveResearchResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_active_research(
+    service: ResearchExecutionService = Depends(get_execution_service),
+) -> ActiveResearchResponse:
+    try:
+        executions = service.persistence.list_active_executions()
+    except PersistenceError as exc:
+        logger.exception("Persistence failure while reading active research")
+        raise PersistenceAPIError() from exc
+
+    return ActiveResearchResponse(
+        executions=[
+            ActiveExecution(
+                report_id=report_id,
+                topic=topic,
+                status=ExecutionStatus.RUNNING,
+                attempt=attempt,
+            )
+            for report_id, topic, attempt in executions
+        ]
+    )
 
 
 @router.get(

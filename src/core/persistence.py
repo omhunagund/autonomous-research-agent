@@ -60,9 +60,6 @@ class SQLitePersistence:
 
     def _initialize(self) -> None:
         try:
-            # WAL is configured once during database initialization so concurrent
-            # trace readers can coexist with workflow writers. Per-connection
-            # busy_timeout remains configured in _connect().
             with sqlite3.connect(self.db_path, timeout=5.0) as connection:
                 connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA foreign_keys = ON")
@@ -229,6 +226,37 @@ class SQLitePersistence:
             raise
         except sqlite3.Error as exc:
             raise PersistenceError(f"Unable to read report {report_id}: {exc}") from exc
+
+    def list_active_executions(self) -> list[tuple[str, str, int]]:
+        """Return currently running executions ordered by start time descending.
+
+        The current attempt is derived from persisted trace events. Executions
+        without any trace event yet are reported as attempt 1.
+        """
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        r.report_id,
+                        r.topic,
+                        COALESCE(MAX(e.attempt), 1) AS attempt
+                    FROM reports AS r
+                    LEFT JOIN execution_events AS e
+                        ON e.report_id = r.report_id
+                    WHERE r.execution_status = 'running'
+                    GROUP BY r.report_id, r.topic, r.created_at
+                    ORDER BY r.created_at DESC
+                    """
+                ).fetchall()
+            return [
+                (row["report_id"], row["topic"], int(row["attempt"]))
+                for row in rows
+            ]
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                f"Unable to list active executions: {exc}"
+            ) from exc
 
     def list_reports(self, limit: int = 20) -> list[StoredReport]:
         if limit <= 0:

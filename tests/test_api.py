@@ -32,8 +32,10 @@ class FakeService:
     def __init__(self, tmp_path: Path) -> None:
         self.persistence = SQLitePersistence(tmp_path / "research.db")
         self.report_id = self.persistence.create_report("Test topic")
-        stored = self.persistence.save_report(self.report_id, _report("Test topic"))
-        self.stored = stored
+        stored = self.persistence.save_report(
+            self.report_id,
+            _report("Test topic"),
+        )
 
         self.persistence.record_event(
             self.report_id,
@@ -50,6 +52,8 @@ class FakeService:
             message="Research execution completed successfully with high quality.",
             attempt=1,
         )
+
+        self.stored = stored
 
     def run(self, topic: str) -> ResearchExecution:
         return ResearchExecution(
@@ -114,6 +118,99 @@ def test_get_report_and_history(tmp_path: Path) -> None:
     assert set(history[0]) == {"report_id", "topic", "created_at", "quality"}
 
 
+def test_active_research_returns_running_only_newest_first_with_current_attempt(
+    tmp_path: Path,
+) -> None:
+    class ActiveService:
+        def __init__(self) -> None:
+            self.persistence = SQLitePersistence(tmp_path / "active.db")
+            self.running_old = self.persistence.create_report("Older running topic")
+            self.persistence.record_event(
+                self.running_old,
+                stage="research",
+                event_type="research_started",
+                message="Research Agent started.",
+                attempt=1,
+            )
+            self.persistence.record_event(
+                self.running_old,
+                stage="research",
+                event_type="research_correction_started",
+                message="Research correction started.",
+                attempt=2,
+            )
+
+            self.running_new = self.persistence.create_report("Newest running topic")
+            self.persistence.record_event(
+                self.running_new,
+                stage="research",
+                event_type="research_started",
+                message="Research Agent started.",
+                attempt=1,
+            )
+
+            completed = self.persistence.create_report("Completed topic")
+            self.persistence.record_event(
+                completed,
+                stage="research",
+                event_type="research_started",
+                message="Research Agent started.",
+                attempt=1,
+            )
+            self.persistence.save_report(completed, _report("Completed topic"))
+
+    service = ActiveService()
+    with _client(service) as client:
+        response = client.get("/research/active")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "executions": [
+            {
+                "report_id": service.running_new,
+                "topic": "Newest running topic",
+                "status": "running",
+                "attempt": 1,
+            },
+            {
+                "report_id": service.running_old,
+                "topic": "Older running topic",
+                "status": "running",
+                "attempt": 2,
+            },
+        ]
+    }
+
+
+def test_active_research_returns_empty_list_when_none_are_running(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    with _client(service) as client:
+        response = client.get("/research/active")
+
+    assert response.status_code == 200
+    assert response.json() == {"executions": []}
+
+
+def test_active_research_persistence_failure_returns_structured_500(tmp_path: Path) -> None:
+    class BrokenPersistenceService:
+        class BrokenPersistence:
+            def list_active_executions(self):
+                from src.core.persistence import PersistenceError
+                raise PersistenceError("database unavailable")
+
+        def __init__(self) -> None:
+            self.persistence = self.BrokenPersistence()
+
+    service = BrokenPersistenceService()
+    with _client(service) as client:
+        response = client.get("/research/active")
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"] == "PersistenceError"
+    assert body["report_id"] is None
+
+
 def test_get_report_unknown_and_malformed_ids(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     with _client(service) as client:
@@ -129,6 +226,7 @@ def test_trace_returns_status_and_events(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     with _client(service) as client:
         response = client.get(f"/research/{service.report_id}/trace")
+
     assert response.status_code == 200
     body = response.json()
     assert body["report_id"] == service.report_id
