@@ -270,3 +270,61 @@ def test_start_research_does_not_store_report_execution_future(monkeypatch) -> N
 
     assert submit_calls == ["report-1"]
     assert "execution_future" not in app.st.session_state
+
+def test_terminal_trace_requests_full_app_rerun(monkeypatch) -> None:
+    import frontend.app as app
+
+    rerun_calls = []
+
+    class FakeClient:
+        def get_active_research(self):
+            return []
+
+        def get_history(self):
+            return []
+
+    monkeypatch.setattr(
+        "frontend.app.st.rerun",
+        lambda: rerun_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_active",
+        lambda client: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_history",
+        lambda client: None,
+    )
+
+    app._handle_terminal_trace_refresh(
+        FakeClient(),
+        app.ExecutionStatus.COMPLETED,
+    )
+
+    assert rerun_calls == [True]
+
+
+def test_terminal_failure_requests_full_app_rerun(monkeypatch) -> None:
+    import frontend.app as app
+
+    rerun_calls = []
+
+    class FakeClient:
+        def get_active_research(self):
+            return []
+
+    monkeypatch.setattr(
+        "frontend.app.st.rerun",
+        lambda: rerun_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_active",
+        lambda client: None,
+    )
+
+    app._handle_terminal_trace_refresh(
+        FakeClient(),
+        app.ExecutionStatus.FAILED,
+    )
+
+    assert rerun_calls == [True]

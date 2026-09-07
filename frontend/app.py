@@ -822,6 +822,15 @@ def _refresh_after_terminal_trace(client: ResearchAPIClient, status: ExecutionSt
         _refresh_history(client)
 
 
+def _handle_terminal_trace_refresh(
+    client: ResearchAPIClient,
+    status: ExecutionStatus,
+) -> None:
+    """Refresh sidebar state and request a full app rerun after termination."""
+    _refresh_after_terminal_trace(client, status)
+    st.rerun()
+
+
 @st.fragment(run_every=POLL_INTERVAL_SECONDS)
 def _live_poll_fragment(client: ResearchAPIClient) -> None:
     if st.session_state.get("workspace_mode") != "live":
@@ -841,7 +850,7 @@ def _live_poll_fragment(client: ResearchAPIClient) -> None:
         else:
             if trace.status in {ExecutionStatus.COMPLETED, ExecutionStatus.FAILED}:
                 st.session_state["polling_active"] = False
-                _refresh_after_terminal_trace(client, trace.status)
+                _handle_terminal_trace_refresh(client, trace.status)
 
     _render_live_workspace(client)
 
