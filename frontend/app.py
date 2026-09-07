@@ -834,11 +834,7 @@ def _live_poll_fragment(client: ResearchAPIClient) -> None:
 
             if trace.status in {ExecutionStatus.COMPLETED, ExecutionStatus.FAILED}:
                 st.session_state["polling_active"] = False
-
-            _refresh_active(client)
-
-            if trace.status is ExecutionStatus.COMPLETED:
-                _refresh_history(client)
+                _refresh_after_terminal_trace(client, trace.status)
 
     _render_live_workspace(client)
 
