@@ -683,6 +683,16 @@ def _source_lookup(sources: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     return {int(source["citation_id"]): source for source in sources}
 
 
+def _safe_reference_url(url: str) -> str | None:
+    """Return an allowed web URL, otherwise None."""
+    url = url.strip()
+
+    if url.startswith(("http://", "https://")):
+        return url
+
+    return None
+
+
 def _render_report(report: dict[str, Any]) -> None:
     st.markdown('<div class="report-shell">', unsafe_allow_html=True)
     references = report.get("references", [])
@@ -809,11 +819,24 @@ def _render_report(report: dict[str, Any]) -> None:
     for source in references:
         citation_id = int(source["citation_id"])
         title = html.escape(str(source.get("title", "Untitled source")))
-        url = html.escape(str(source.get("url", "")), quote=True)
+        url = _safe_reference_url(str(source.get("url", "")))
+
+        if url is None:
+            reference_html = (
+                f'<span class="source-number">{citation_id}.</span> '
+                f'<span class="report-link">{title}</span>'
+            )
+        else:
+            escaped_url = html.escape(url, quote=True)
+            reference_html = (
+                f'<span class="source-number">{citation_id}.</span> '
+                f'<a class="report-link" href="{escaped_url}" '
+                f'target="_blank" rel="noopener noreferrer">{title}</a>'
+            )
+
         st.markdown(
             f'<div class="source-card" id="source-{citation_id}">'
-            f'<span class="source-number">{citation_id}.</span> '
-            f'<a class="report-link" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+            f'{reference_html}'
             f'</div>',
             unsafe_allow_html=True,
         )

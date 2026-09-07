@@ -365,3 +365,77 @@ def test_streamlit_status_state_distinguishes_failed_execution(monkeypatch) -> N
     app._render_live_workspace(object())
 
     assert captured["state"] == "error"
+
+def test_reference_url_allows_http_and_https(monkeypatch) -> None:
+    import frontend.app as app
+
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda content, **kwargs: rendered.append(content),
+    )
+
+    rendered = []
+
+    report = {
+        "executive_summary": "",
+        "key_findings": [],
+        "supporting_evidence": [],
+        "gaps": [],
+        "gap_explanations": [],
+        "conflicts": [],
+        "conflict_explanations": [],
+        "references": [
+            {
+                "citation_id": 1,
+                "title": "HTTP source",
+                "url": "http://example.com/source",
+            },
+            {
+                "citation_id": 2,
+                "title": "HTTPS source",
+                "url": "https://example.com/source",
+            },
+        ],
+    }
+
+    app._render_report(report)
+
+    joined = "\n".join(rendered)
+
+    assert 'href="http://example.com/source"' in joined
+    assert 'href="https://example.com/source"' in joined
+
+
+def test_reference_url_rejects_non_http_scheme(monkeypatch) -> None:
+    import frontend.app as app
+
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda content, **kwargs: rendered.append(content),
+    )
+
+    rendered = []
+
+    report = {
+        "executive_summary": "",
+        "key_findings": [],
+        "supporting_evidence": [],
+        "gaps": [],
+        "gap_explanations": [],
+        "conflicts": [],
+        "conflict_explanations": [],
+        "references": [
+            {
+                "citation_id": 1,
+                "title": "Unsafe source",
+                "url": "javascript:alert(1)",
+            },
+        ],
+    }
+
+    app._render_report(report)
+
+    joined = "\n".join(rendered)
+
+    assert 'href="javascript:alert(1)"' not in joined
+    assert "Unsafe source" in joined
