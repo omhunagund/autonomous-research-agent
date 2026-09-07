@@ -10,10 +10,12 @@ The Writer is a controlled presentation layer:
 
 from __future__ import annotations
 
+import logging
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.core.evidence_compaction import compact_sources_for_prompt
 from src.core.llm import LLMService
 from src.models.schemas import (
     FinalReport,
@@ -23,6 +25,7 @@ from src.models.schemas import (
     SupportingEvidence,
 )
 
+logger = logging.getLogger(__name__)
 
 WRITING_RETRY_LIMIT = 2
 VALID_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
@@ -64,10 +67,9 @@ def _unique_in_order(values: list[int]) -> list[int]:
     return result
 
 
-def _validate_declared_citations(
+def _validate_text_citations(
     *,
     text: str,
-    declared: list[int],
     valid_source_ids: set[int],
     context: str,
 ) -> tuple[bool, str]:
@@ -76,20 +78,9 @@ def _validate_declared_citations(
             f"{context} contains invalid citation syntax; use only [n] or [n][m]"
         )
 
-    parsed = _parse_citations(text)
-    unique_parsed = _unique_in_order(parsed)
+    parsed = _unique_in_order(_parse_citations(text))
 
-    if unique_parsed != declared:
-        return (
-            False,
-            f"{context} citation_ids must equal unique citation IDs parsed from "
-            "text in first-appearance order",
-        )
-
-    if len(set(declared)) != len(declared):
-        return False, f"{context} citation_ids must be unique"
-
-    unknown = sorted(set(declared) - valid_source_ids)
+    unknown = sorted(set(parsed) - valid_source_ids)
     if unknown:
         return False, f"{context} contains unknown citation IDs: {unknown}"
 
@@ -103,6 +94,95 @@ def _all_text_fields(draft: InternalReportDraft) -> list[str]:
     texts.extend(item.text for item in draft.gap_drafts)
     texts.extend(item.text for item in draft.conflict_drafts)
     return texts
+
+def _backfill_writer_citations(
+    draft: InternalReportDraft,
+    state: ResearchState,
+) -> InternalReportDraft:
+    """
+    Backfill missing Writer citations from authoritative Analysis sources.
+
+    This is a safety net, not a replacement for normal Writer citation
+    behavior. Every backfill is logged so the intervention remains visible.
+    Canonical Analysis fields are never modified.
+    """
+    finding_drafts = list(draft.finding_drafts)
+    evidence_drafts = list(draft.evidence_drafts)
+
+    changed = False
+
+    for index, (finding, finding_draft) in enumerate(
+        zip(state.findings, finding_drafts),
+        start=1,
+    ):
+        if _parse_citations(finding_draft.text):
+            continue
+
+        if not finding.supporting_sources:
+            continue
+
+        citation_id = finding.supporting_sources[0]
+        finding_drafts[index - 1] = finding_draft.model_copy(
+            update={
+                "text": f"{finding_draft.text.rstrip()} [{citation_id}]",
+            }
+        )
+        changed = True
+
+        logger.warning(
+            "Writer citation backfill applied to finding draft %d; "
+            "appended approved source citation [%d].",
+            index,
+            citation_id,
+        )
+
+    for index, evidence_draft in enumerate(evidence_drafts, start=1):
+        if _parse_citations(evidence_draft.text):
+            continue
+
+        citation_id: int | None = None
+
+        if evidence_draft.related_finding_indices:
+            first_finding_index = evidence_draft.related_finding_indices[0]
+            finding = state.findings[first_finding_index - 1]
+
+            if finding.supporting_sources:
+                citation_id = finding.supporting_sources[0]
+        elif state.sources:
+            citation_id = state.sources[0].citation_id
+
+        if citation_id is None:
+            logger.warning(
+                "Writer citation backfill could not be applied to evidence "
+                "draft %d because no approved source was available.",
+                index,
+            )
+            continue
+
+        evidence_drafts[index - 1] = evidence_draft.model_copy(
+            update={
+                "text": f"{evidence_draft.text.rstrip()} [{citation_id}]",
+            }
+        )
+        changed = True
+
+        logger.warning(
+            "Writer citation backfill applied to evidence draft %d; "
+            "appended approved source citation [%d].",
+            index,
+            citation_id,
+        )
+
+    if not changed:
+        return draft
+
+    return draft.model_copy(
+        update={
+            "finding_drafts": finding_drafts,
+            "evidence_drafts": evidence_drafts,
+        },
+        deep=True,
+    )
 
 
 def _validate_internal_report_draft(
@@ -149,20 +229,23 @@ def _validate_internal_report_draft(
         if not finding_draft.text.strip():
             return False, f"finding draft {index} has empty text"
 
-        valid, reason = _validate_declared_citations(
+        valid, reason = _validate_text_citations(
             text=finding_draft.text,
-            declared=finding_draft.citation_ids,
             valid_source_ids=source_ids,
             context=f"finding draft {index}",
         )
         if not valid:
             return False, reason
 
-        if not finding_draft.citation_ids:
+        finding_citation_ids = _unique_in_order(
+            _parse_citations(finding_draft.text)
+        )
+
+        if not finding_citation_ids:
             return False, f"finding draft {index} must contain at least one citation"
 
         unauthorized = sorted(
-            set(finding_draft.citation_ids) - set(finding.supporting_sources)
+            set(finding_citation_ids) - set(finding.supporting_sources)
         )
         if unauthorized:
             return False, (
@@ -174,9 +257,13 @@ def _validate_internal_report_draft(
         if not evidence_draft.text.strip():
             return False, f"evidence draft {index} has empty text"
 
-        valid, reason = _validate_declared_citations(
+        if not _parse_citations(evidence_draft.text):
+            return False, (
+                f"evidence draft {index} must contain at least one citation"
+        )
+
+        valid, reason = _validate_text_citations(
             text=evidence_draft.text,
-            declared=evidence_draft.citation_ids,
             valid_source_ids=source_ids,
             context=f"evidence draft {index}",
         )
@@ -195,7 +282,13 @@ def _validate_internal_report_draft(
             for finding_index in evidence_draft.related_finding_indices:
                 allowed.update(state.findings[finding_index - 1].supporting_sources)
 
-            unauthorized = sorted(set(evidence_draft.citation_ids) - allowed)
+            evidence_citation_ids = _unique_in_order(
+                _parse_citations(evidence_draft.text)
+            )
+
+            unauthorized = sorted(
+                set(evidence_citation_ids) - allowed
+            )
             if unauthorized:
                 return False, (
                     f"evidence draft {index} cites sources unrelated to its "
@@ -216,19 +309,10 @@ def _validate_internal_report_draft(
         for citation in _parse_citations(text)
     )
 
-    if report_citations != draft.cited_source_ids:
-        return False, (
-            "cited_source_ids must equal unique citation IDs parsed from all "
-            "Writer-generated text in first-appearance order"
-        )
-
-    if len(set(draft.cited_source_ids)) != len(draft.cited_source_ids):
-        return False, "cited_source_ids must be unique"
-
-    unknown_report_citations = sorted(set(draft.cited_source_ids) - source_ids)
+    unknown_report_citations = sorted(set(report_citations) - source_ids)
     if unknown_report_citations:
         return False, (
-            "cited_source_ids contains unknown citation IDs: "
+            "Writer-generated text contains unknown citation IDs: "
             f"{unknown_report_citations}"
         )
 
@@ -247,17 +331,26 @@ def _writing_messages(
         "retrieved Source evidence. Never introduce a new factual claim "
         "absent from Analysis. Never change, reorder, remove, or reinterpret "
         "Analysis Findings, Gaps, or Conflicts. For each Finding, generate "
-        "only text and citation_ids. The original claim, supporting_sources, "
-        "and confidence are immutable and are not writable. Use only approved "
-        "inline citation syntax: [1] or [1][3]. Cite at least one source for "
-        "every Finding. Cite each factual statement at the smallest practical "
-        "unit. Evidence drafts may reference multiple Findings with "
-        "1-based related_finding_indices or may have an empty relationship "
-        "for contextual evidence. When Findings are referenced, evidence "
-        "citations must come only from those Findings' supporting_sources. "
-        "Represent every Analysis gap and conflict exactly once, in order. "
-        "Do not create new gaps or conflicts. Keep their structured meaning "
-        "unchanged. Material gaps and conflicts must remain visible. "
+        "only the written text for that Finding. The original claim, "
+        "supporting_sources, and confidence are immutable and are not writable. "
+        "Use only approved inline citation syntax: [1] or [1][3]. "
+        "Cite at least one source for every Finding. Cite each factual "
+        "statement at the smallest practical unit. Supporting evidence is "
+        "mandatory whenever at least one Finding exists. When Findings exist, "
+        "generate at least one Evidence draft. Evidence drafts may reference "
+        "multiple Findings with 1-based related_finding_indices or may have "
+        "an empty relationship for contextual evidence. When Findings are "
+        "referenced, evidence citations must come only from those Findings' "
+        "supporting_sources. Represent every Analysis gap and conflict exactly "
+        "once, in order. Do not create new gaps or conflicts. Keep their "
+        "structured meaning unchanged. Material gaps and conflicts must remain "
+        "visible. Always return every required top-level field in the "
+        "structured response: executive_summary, finding_drafts, "
+        "evidence_drafts, gap_drafts, and conflict_drafts. Never omit a "
+        "required field. When there are no Analysis conflicts, return "
+        "conflict_drafts as an empty list. When there are no Analysis gaps, "
+        "return gap_drafts as an empty list. When there are no Analysis "
+        "Findings, return finding_drafts and evidence_drafts as empty lists. "
         "Executive-summary factual statements require citations. Memory is "
         "planning context only and never evidence. Do not assign report quality."
     )
@@ -288,6 +381,11 @@ def _writing_messages(
         for index, conflict in enumerate(state.conflicts, start=1)
     ) or "No Conflicts."
 
+    compacted_sources = compact_sources_for_prompt(
+        state.sources,
+        state.sub_questions,
+    )
+
     sources_context = "\n\n---\n\n".join(
         (
             f"Source [{source.citation_id}]\n"
@@ -295,7 +393,7 @@ def _writing_messages(
             f"URL: {source.url}\n"
             f"Content:\n{source.content}"
         )
-        for source in state.sources
+        for source in compacted_sources
     ) or "No sources."
 
     user = (
@@ -334,9 +432,15 @@ def build_final_report(
     """Assemble a provisional report; quality intentionally remains unset."""
     source_by_id = {source.citation_id: source for source in state.sources}
 
+    cited_source_ids = _unique_in_order(
+        citation
+        for text in _all_text_fields(draft)
+        for citation in _parse_citations(text)
+    )
+
     references = [
         source_by_id[citation_id]
-        for citation_id in sorted(draft.cited_source_ids)
+        for citation_id in sorted(cited_source_ids)
     ]
 
     return FinalReport(
@@ -346,7 +450,9 @@ def build_final_report(
         supporting_evidence=[
             SupportingEvidence(
                 text=item.text.strip(),
-                citation_ids=list(item.citation_ids),
+                citation_ids=_unique_in_order(
+                    _parse_citations(item.text)
+                ),
                 related_finding_indices=list(item.related_finding_indices),
             )
             for item in draft.evidence_drafts
@@ -376,6 +482,8 @@ def write_report(
             InternalReportDraft,
         )
 
+        draft = _backfill_writer_citations(draft, state)
+
         valid, reason = _validate_internal_report_draft(draft, state)
         if valid:
             return build_final_report(state, draft)
@@ -387,7 +495,8 @@ def write_report(
 
     raise WritingValidationError(
         "Unable to produce a valid report draft after "
-        f"{WRITING_RETRY_LIMIT} validation retries."
+        f"{WRITING_RETRY_LIMIT} validation retries. "
+        f"Final validation failure: {reason}"
     )
 
 

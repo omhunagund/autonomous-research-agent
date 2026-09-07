@@ -24,6 +24,12 @@ class FakeAuthenticationError(Exception):
     status_code = 401
     code = "authentication_error"
 
+class FakeTimeoutError(Exception):
+    status_code = 408
+
+class FakeConflictError(Exception):
+    status_code = 409
+
 
 # ---------------------------------------------------------------------------
 # Error classification tests
@@ -39,6 +45,17 @@ def test_retryable_model_not_found_error():
 def test_non_retryable_authentication_error():
     assert _is_retryable_error(
         FakeAuthenticationError("invalid API key")
+    ) is False
+
+def test_timeout_error_is_retryable():
+    assert _is_retryable_error(
+        FakeTimeoutError("request timed out")
+    ) is True
+
+
+def test_conflict_error_is_not_retryable():
+    assert _is_retryable_error(
+        FakeConflictError("request conflict")
     ) is False
 
 
@@ -145,6 +162,25 @@ def test_fallback_failure_raises_llm_invocation_error():
     primary.invoke.assert_called_once_with(messages)
     fallback.invoke.assert_called_once_with(messages)
 
+def test_normal_invocation_does_not_set_structured_reasoning_effort():
+    primary = Mock()
+    fallback = Mock()
+
+    primary.invoke.return_value = Mock()
+
+    service = LLMService(
+        primary_model=primary,
+        fallback_model=fallback,
+        groq_client=Mock(),
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+    service.invoke(messages)
+
+    primary.invoke.assert_called_once_with(messages)
+
 
 # ---------------------------------------------------------------------------
 # Native structured-output tests
@@ -185,6 +221,9 @@ def test_structured_primary_success():
     )
 
     groq_client.chat.completions.create.assert_called_once()
+
+    call_kwargs = groq_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["reasoning_effort"] == "low"
 
 
 def test_structured_retryable_primary_failure_uses_fallback():

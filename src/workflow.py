@@ -56,7 +56,7 @@ def _research_node(state: ResearchState, recorder=None) -> dict:
     )
     analysis = analyze_research(updated, get_llm_service())
     _record_trace(
-        recorder, analysis, stage="analysis", event_type="analysis_completed",
+        recorder, updated, stage="analysis", event_type="analysis_completed",
         message=(
             f"Analysis evaluated {len(analysis.findings)} finding(s), "
             f"{len(analysis.gaps)} gap(s), and {len(analysis.conflicts)} conflict(s)."

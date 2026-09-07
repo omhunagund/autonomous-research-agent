@@ -264,6 +264,15 @@ def _configure_page() -> None:
 def _quality_label(value: QualityLevel) -> str:
     return value.value.capitalize()
 
+def _history_topic_label(topic: str, max_length: int = 42) -> str:
+    """Return a compact history label while preserving the full topic in the tooltip."""
+    topic = topic.strip()
+
+    if len(topic) <= max_length:
+        return topic
+
+    return f"{topic[:max_length - 1].rstrip()}…"
+
 
 def _initialize_state() -> None:
     defaults: dict[str, Any] = {
@@ -387,7 +396,7 @@ def _render_sidebar(client: ResearchAPIClient) -> None:
         for item in history:
             topic = item.topic
             selected = item.report_id == st.session_state.get("selected_report_id") and st.session_state.get("workspace_mode") == "history"
-            label = f"{'• ' if selected else ''}{topic}"
+            label = f"{'• ' if selected else ''}{_history_topic_label(topic)}"
             if st.button(
                 label,
                 key=f"history_{item.report_id}",
@@ -790,6 +799,13 @@ def _render_report(report: dict[str, Any]) -> None:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+def _refresh_after_terminal_trace(client: ResearchAPIClient, status: ExecutionStatus) -> None:
+    """Refresh sidebar state after an execution reaches a terminal status."""
+    _refresh_active(client)
+
+    if status is ExecutionStatus.COMPLETED:
+        _refresh_history(client)
+
 
 @st.fragment(run_every=POLL_INTERVAL_SECONDS)
 def _live_poll_fragment(client: ResearchAPIClient) -> None:
@@ -818,6 +834,11 @@ def _live_poll_fragment(client: ResearchAPIClient) -> None:
 
             if trace.status in {ExecutionStatus.COMPLETED, ExecutionStatus.FAILED}:
                 st.session_state["polling_active"] = False
+
+            _refresh_active(client)
+
+            if trace.status is ExecutionStatus.COMPLETED:
+                _refresh_history(client)
 
     _render_live_workspace(client)
 

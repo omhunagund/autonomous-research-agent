@@ -100,12 +100,10 @@ class Analysis(BaseModel):
 
 class WrittenFindingDraft(BaseModel):
     text: str
-    citation_ids: list[int]
 
 
 class WrittenEvidenceDraft(BaseModel):
     text: str
-    citation_ids: list[int]
     related_finding_indices: list[int]
 
 
@@ -129,7 +127,6 @@ class InternalReportDraft(BaseModel):
     evidence_drafts: list[WrittenEvidenceDraft]
     gap_drafts: list[WrittenGapDraft]
     conflict_drafts: list[WrittenConflictDraft]
-    cited_source_ids: list[int]
 
 
 class Critique(BaseModel):

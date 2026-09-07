@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from src.core.evidence_compaction import compact_sources_for_prompt
 from src.core.llm import LLMService
 from src.models.schemas import (
     Analysis,
@@ -42,12 +43,24 @@ class AnalysisValidationError(RuntimeError):
     """Raised when the LLM analysis cannot satisfy deterministic validation."""
 
 
-def _source_context(sources: list[Source]) -> str:
+def _source_context(
+    sources: list[Source],
+    sub_questions: list[str],
+) -> str:
     if not sources:
         return "No usable sources were retrieved."
 
+    compacted_sources = compact_sources_for_prompt(
+        sources,
+        sub_questions,
+    )
+
+    if not compacted_sources:
+        return "No source evidence fit within the analysis context budget."
+
     blocks: list[str] = []
-    for source in sources:
+
+    for source in compacted_sources:
         blocks.append(
             f"Source [{source.citation_id}]\n"
             f"Title: {source.title}\n"
@@ -57,6 +70,7 @@ def _source_context(sources: list[Source]) -> str:
             f"Snippet: {source.snippet}\n"
             f"Content:\n{source.content}"
         )
+
     return "\n\n---\n\n".join(blocks)
 
 
@@ -127,7 +141,8 @@ def _analysis_messages(
         f"Sub-questions:\n"
         + "\n".join(f"- {question}" for question in state.sub_questions)
         + "\n\n"
-        f"Current retrieved sources:\n{_source_context(state.sources)}\n\n"
+        f"Current retrieved sources:\n"
+        f"{_source_context(state.sources, state.sub_questions)}\n\n"
         f"Research limitations:\n{_limitation_context(state)}\n\n"
         f"Prior memory context (planning context only, never evidence):\n"
         f"{_memory_context(state)}"

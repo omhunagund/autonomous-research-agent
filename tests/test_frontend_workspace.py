@@ -9,11 +9,15 @@ from frontend.app import (
     _citation_links_html,
     _current_stage,
     _event_completed,
+    _history_topic_label,
     _jump_to_latest_html,
     _source_lookup,
     _trace_event_signature,
 )
 from frontend.models import TraceEvent
+
+from frontend.app import _refresh_after_terminal_trace
+from frontend.models import ExecutionStatus
 
 
 def _event(stage: str, event_type: str, attempt: int = 1) -> TraceEvent:
@@ -101,3 +105,60 @@ def test_jump_to_latest_uses_dependency_free_anchor() -> None:
     assert 'href="#trace-latest"' in rendered
     assert 'role="button"' not in rendered
     assert "Jump to latest" in rendered
+
+def test_history_topic_label_keeps_short_topic_unchanged() -> None:
+    topic = "AI in healthcare"
+
+    assert _history_topic_label(topic) == topic
+
+
+def test_history_topic_label_truncates_long_topic_with_ellipsis() -> None:
+    topic = (
+        "How is generative AI changing software engineering "
+        "productivity in modern development teams?"
+    )
+
+    result = _history_topic_label(topic)
+
+    assert result.endswith("…")
+    assert len(result) <= 42
+    assert result != topic
+
+def test_terminal_completion_refreshes_active_and_history(monkeypatch) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        "frontend.app._refresh_active",
+        lambda client: calls.append("active"),
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_history",
+        lambda client: calls.append("history"),
+    )
+
+    _refresh_after_terminal_trace(
+        object(),
+        ExecutionStatus.COMPLETED,
+    )
+
+    assert calls == ["active", "history"]
+
+
+def test_terminal_failure_refreshes_active_but_not_history(monkeypatch) -> None:
+    calls = []
+
+    monkeypatch.setattr(
+        "frontend.app._refresh_active",
+        lambda client: calls.append("active"),
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_history",
+        lambda client: calls.append("history"),
+    )
+
+    _refresh_after_terminal_trace(
+        object(),
+        ExecutionStatus.FAILED,
+    )
+
+    assert calls == ["active"]

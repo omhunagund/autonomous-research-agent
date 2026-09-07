@@ -52,7 +52,7 @@ def _is_retryable_error(exc: Exception) -> bool:
 
     status_code = getattr(exc, "status_code", None)
 
-    if status_code in {408, 409, 429}:
+    if status_code in {408, 429}:
         return True
 
     if isinstance(status_code, int) and 500 <= status_code <= 599:
@@ -164,6 +164,14 @@ def _build_json_schema(schema: type[BaseModel]) -> dict[str, Any]:
         if isinstance(node, dict):
             if node.get("type") == "object":
                 node["additionalProperties"] = False
+                properties = node.get("properties")
+                if isinstance(properties, dict):
+                    # Groq strict JSON Schema requires every object property
+                    # to be listed in `required`, including nullable fields.
+                    # Pydantic omits fields with defaults from `required`, so
+                    # normalize the provider-facing schema without changing
+                    # the Pydantic model's Python-side optional semantics.
+                    node["required"] = list(properties)
 
             for value in node.values():
                 normalize_object_schema(value)
@@ -187,7 +195,12 @@ def _invoke_groq_structured(
     """
     Invoke Groq using native JSON Schema structured outputs and validate
     the response through the supplied Pydantic model.
+
+    Structured calls use low reasoning effort to favor direct schema-conforming
+    output while leaving normal LLM invocations unchanged.
     """
+    request_kwargs = dict(kwargs)
+    request_kwargs.setdefault("reasoning_effort", "low")
 
     response = client.chat.completions.create(
         model=model_name,
@@ -200,7 +213,7 @@ def _invoke_groq_structured(
                 "schema": _build_json_schema(schema),
             },
         },
-        **kwargs,
+        **request_kwargs,
     )
 
     content = response.choices[0].message.content

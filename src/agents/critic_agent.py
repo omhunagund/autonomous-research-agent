@@ -21,6 +21,7 @@ import re
 from collections.abc import Iterable
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from src.core.evidence_compaction import compact_sources_for_prompt
 
 from src.core.llm import LLMService
 from src.models.schemas import (
@@ -137,6 +138,14 @@ def _source_context(state: ResearchState) -> str:
     if not state.sources:
         return "No current retrieved sources."
 
+    compacted_sources = compact_sources_for_prompt(
+        state.sources,
+        state.sub_questions,
+    )
+
+    if not compacted_sources:
+        return "No current retrieved source content is available within the prompt budget."
+
     return "\n\n---\n\n".join(
         (
             f"Source [{source.citation_id}]\n"
@@ -147,7 +156,7 @@ def _source_context(state: ResearchState) -> str:
             f"Snippet: {source.snippet}\n"
             f"Content:\n{source.content}"
         )
-        for source in state.sources
+        for source in compacted_sources
     )
 
 

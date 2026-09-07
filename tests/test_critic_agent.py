@@ -23,7 +23,8 @@ from src.models.schemas import (
     ResearchState,
     Source,
 )
-
+from src.core.evidence_compaction import PROMPT_EVIDENCE_TOKEN_BUDGET
+from src.agents.critic_agent import _source_context
 
 def _source(citation_id: int) -> Source:
     return Source(
@@ -288,6 +289,46 @@ def test_duplicate_reference_is_rejected() -> None:
 
     with pytest.raises(CriticInputValidationError):
         _validate_reviewable_draft(state)
+
+def test_critic_source_context_uses_compacted_evidence() -> None:
+    state = _state()
+
+    state.sources = [
+        Source(
+            citation_id=1,
+            title="Large source",
+            url="https://example.com/large",
+            retrieved_at=datetime.now(timezone.utc),
+            snippet="Relevant evidence",
+            search_queries=["AI healthcare outcomes"],
+            content=(
+                "AI healthcare outcomes are improving.\n\n"
+                + ("Unrelated filler paragraph. " * 20_000)
+            ),
+        ),
+        Source(
+            citation_id=2,
+            title="Second source",
+            url="https://example.com/second",
+            retrieved_at=datetime.now(timezone.utc),
+            snippet="Additional evidence",
+            search_queries=["AI healthcare outcomes"],
+            content="Additional evidence about healthcare outcomes.",
+        ),
+    ]
+
+    original_contents = [source.content for source in state.sources]
+
+    context = _source_context(state)
+
+    assert "Source [1]" in context
+    assert "Source [2]" in context
+
+    # The original canonical evidence must remain unchanged.
+    assert [source.content for source in state.sources] == original_contents
+
+    # The huge filler should not make it into the prompt context.
+    assert context.count("Unrelated filler paragraph.") < 100
 
 
 def test_critic_uses_feedback_retry() -> None:
