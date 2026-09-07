@@ -564,8 +564,29 @@ def _render_trace(events: list[TraceEvent]) -> None:
             st.session_state["trace_has_new_events"] = False
             st.rerun()
 
+def _reset_to_landing() -> None:
+    """Reset the current workspace without affecting active executions."""
+    st.session_state["workspace_mode"] = "landing"
+    st.session_state["selected_report_id"] = None
+    st.session_state["selected_topic"] = None
+    st.session_state["selected_quality"] = None
+    st.session_state["current_report"] = None
+    st.session_state["current_trace"] = None
+    st.session_state["report_error"] = None
+    st.session_state["execution_error"] = None
+    st.session_state["polling_active"] = False
+
+
+def _render_live_workspace_controls() -> None:
+    """Render controls that let users leave a live execution workspace."""
+    if st.button("New Research", key="live_new_research"):
+        _reset_to_landing()
+        st.rerun()
+
 
 def _render_live_workspace(client: ResearchAPIClient) -> None:
+    _render_live_workspace_controls()
+
     report_id = st.session_state.get("selected_report_id")
     topic = st.session_state.get("selected_topic") or "Research"
 
@@ -900,13 +921,7 @@ def main() -> None:
         _live_poll_fragment(client)
     elif mode == "history":
         if st.button("New Research", key="new_research"):
-            st.session_state["workspace_mode"] = "landing"
-            st.session_state["selected_report_id"] = None
-            st.session_state["selected_topic"] = None
-            st.session_state["current_report"] = None
-            st.session_state["current_trace"] = None
-            st.session_state["report_error"] = None
-            st.session_state["execution_error"] = None
+            _reset_to_landing()
             st.rerun()
         if st.session_state.get("report_error"):
             st.error(st.session_state["report_error"])

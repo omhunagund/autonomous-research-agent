@@ -439,3 +439,55 @@ def test_reference_url_rejects_non_http_scheme(monkeypatch) -> None:
 
     assert 'href="javascript:alert(1)"' not in joined
     assert "Unsafe source" in joined
+
+def test_live_workspace_new_research_resets_workspace_without_clearing_active(monkeypatch) -> None:
+    import frontend.app as app
+
+    app.st.session_state = {
+        "workspace_mode": "live",
+        "selected_report_id": "report-1",
+        "selected_topic": "Running research",
+        "selected_quality": app.QualityLevel.HIGH,
+        "current_report": {"topic": "Running research"},
+        "current_trace": object(),
+        "report_error": "old error",
+        "execution_error": "old execution error",
+        "polling_active": True,
+        "active_research": [
+            type(
+                "Active",
+                (),
+                {
+                    "report_id": "report-1",
+                    "topic": "Running research",
+                    "status": app.ExecutionStatus.RUNNING,
+                    "attempt": 1,
+                },
+            )()
+        ],
+    }
+
+    rerun_calls = []
+
+    monkeypatch.setattr(
+        "frontend.app.st.button",
+        lambda label, **kwargs: label == "New Research",
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.rerun",
+        lambda: rerun_calls.append(True),
+    )
+
+    app._render_live_workspace_controls()
+
+    assert app.st.session_state["workspace_mode"] == "landing"
+    assert app.st.session_state["selected_report_id"] is None
+    assert app.st.session_state["selected_topic"] is None
+    assert app.st.session_state["selected_quality"] is None
+    assert app.st.session_state["current_report"] is None
+    assert app.st.session_state["current_trace"] is None
+    assert app.st.session_state["report_error"] is None
+    assert app.st.session_state["execution_error"] is None
+    assert app.st.session_state["polling_active"] is False
+    assert len(app.st.session_state["active_research"]) == 1
+    assert rerun_calls == [True]
