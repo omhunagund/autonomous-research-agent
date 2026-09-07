@@ -1,7 +1,7 @@
 """Streamlit live research workspace."""
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import html
 import re
 from typing import Any
@@ -287,7 +287,6 @@ def _initialize_state() -> None:
         "selected_quality": None,
         "current_trace": None,
         "current_report": None,
-        "execution_future": None,
         "execution_error": None,
         "report_error": None,
         "polling_active": False,
@@ -327,7 +326,7 @@ def _start_research(client: ResearchAPIClient, topic: str) -> None:
     st.session_state["report_error"] = None
     st.session_state["workspace_mode"] = "live"
     st.session_state["polling_active"] = True
-    st.session_state["execution_future"] = _submit_execution(client, init.report_id)
+    _submit_execution(client, init.report_id)
     _refresh_active(client, select_id=init.report_id)
 
 
@@ -614,25 +613,41 @@ def _render_live_workspace(client: ResearchAPIClient) -> None:
 def _complete_live_workspace(client: ResearchAPIClient, report_id: str) -> None:
     st.session_state["polling_active"] = False
 
-    try:
-        payload = client.get_report(report_id)
-    except APIClientError as exc:
-        st.warning("Research completed, but the final report could not be loaded.")
-        if st.button("Retry", key=f"report_retry_{report_id}"):
-            try:
-                payload = client.get_report(report_id)
-                st.session_state["current_report"] = payload["report"]
-                st.session_state["report_error"] = None
-                st.rerun()
-            except APIClientError as retry_exc:
-                st.session_state["report_error"] = retry_exc.message
-                return
-        return
+    report = st.session_state.get("current_report")
 
-    report = payload["report"]
-    st.session_state["current_report"] = report
-    st.session_state["selected_quality"] = QualityLevel(report["quality"])
-    attempts = max((event.attempt for event in st.session_state["current_trace"].events), default=1)
+    if report is None:
+        try:
+            payload = client.get_report(report_id)
+        except APIClientError as exc:
+            st.session_state["report_error"] = exc.message
+            st.warning("Research completed, but the final report could not be loaded.")
+
+            if st.button("Retry", key=f"report_retry_{report_id}"):
+                try:
+                    payload = client.get_report(report_id)
+                    report = payload["report"]
+                    st.session_state["current_report"] = report
+                    st.session_state["selected_quality"] = QualityLevel(report["quality"])
+                    st.session_state["report_error"] = None
+                    st.rerun()
+                except APIClientError as retry_exc:
+                    st.session_state["report_error"] = retry_exc.message
+                    return
+
+            return
+
+        report = payload["report"]
+        st.session_state["current_report"] = report
+        st.session_state["selected_quality"] = QualityLevel(report["quality"])
+        st.session_state["report_error"] = None
+    else:
+        st.session_state["selected_quality"] = QualityLevel(report["quality"])
+
+    attempts = max(
+        (event.attempt for event in st.session_state["current_trace"].events),
+        default=1,
+    )
+
     st.success(
         f"Research complete · {QualityLevel(report['quality']).value.capitalize()} quality · "
         f"{attempts} attempt{'s' if attempts != 1 else ''}"
@@ -824,14 +839,6 @@ def _live_poll_fragment(client: ResearchAPIClient) -> None:
             st.session_state["execution_error"] = exc.message
             trace = st.session_state.get("current_trace")
         else:
-            future = st.session_state.get("execution_future")
-            if isinstance(future, Future) and future.done():
-                try:
-                    future.result()
-                except Exception:
-                    # The backend persists failure state; the trace is authoritative.
-                    pass
-
             if trace.status in {ExecutionStatus.COMPLETED, ExecutionStatus.FAILED}:
                 st.session_state["polling_active"] = False
                 _refresh_after_terminal_trace(client, trace.status)

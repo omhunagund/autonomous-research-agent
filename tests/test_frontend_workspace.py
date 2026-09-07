@@ -162,3 +162,111 @@ def test_terminal_failure_refreshes_active_but_not_history(monkeypatch) -> None:
     )
 
     assert calls == ["active"]
+
+def test_complete_live_workspace_reuses_loaded_report(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    class FakeClient:
+        def get_report(self, report_id):
+            calls["count"] += 1
+            return {
+                "report": {
+                    "quality": "high",
+                    "key_findings": [],
+                    "supporting_evidence": [],
+                    "gaps": [],
+                    "gap_explanations": [],
+                    "conflicts": [],
+                    "conflict_explanations": [],
+                    "references": [],
+                    "executive_summary": "Summary.",
+                }
+            }
+
+    rendered_reports = []
+
+    monkeypatch.setattr(
+        "frontend.app._render_report",
+        lambda report: rendered_reports.append(report),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.success",
+        lambda *args, **kwargs: None,
+    )
+
+    import frontend.app as app
+
+    app.st.session_state = {
+        "polling_active": False,
+        "current_report": None,
+        "selected_quality": None,
+        "current_trace": type(
+            "Trace",
+            (),
+            {"events": []},
+        )(),
+    }
+
+    app._complete_live_workspace(FakeClient(), "report-1")
+    app._complete_live_workspace(FakeClient(), "report-1")
+
+    assert calls["count"] == 1
+    assert len(rendered_reports) == 2
+    assert rendered_reports[0] == rendered_reports[1]
+
+
+def test_complete_live_workspace_sets_report_error_when_initial_load_fails(monkeypatch) -> None:
+    import frontend.app as app
+
+    class FakeClient:
+        def get_report(self, report_id):
+            raise app.APIClientError("Report unavailable")
+
+    app.st.session_state = {
+        "polling_active": False,
+        "current_report": None,
+        "selected_quality": None,
+        "current_trace": type(
+            "Trace",
+            (),
+            {"events": []},
+        )(),
+    }
+
+    monkeypatch.setattr(
+        "frontend.app.st.warning",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.button",
+        lambda *args, **kwargs: False,
+    )
+
+    app._complete_live_workspace(FakeClient(), "report-1")
+
+    assert app.st.session_state["report_error"] == "Report unavailable"
+
+def test_start_research_does_not_store_report_execution_future(monkeypatch) -> None:
+    import frontend.app as app
+
+    class FakeClient:
+        def initialize_research(self, topic):
+            return type("Init", (), {"report_id": "report-1"})()
+
+    submit_calls = []
+
+    monkeypatch.setattr(
+        "frontend.app._submit_execution",
+        lambda client, report_id: submit_calls.append(report_id),
+    )
+    monkeypatch.setattr(
+        "frontend.app._refresh_active",
+        lambda client, select_id=None: None,
+    )
+
+    app.st.session_state = {}
+
+    app._start_research(FakeClient(), "Test concurrent research")
+
+    assert submit_calls == ["report-1"]
+    assert "execution_future" not in app.st.session_state
