@@ -328,3 +328,40 @@ def test_terminal_failure_requests_full_app_rerun(monkeypatch) -> None:
     )
 
     assert rerun_calls == [True]
+
+def test_streamlit_status_state_distinguishes_failed_execution(monkeypatch) -> None:
+    import frontend.app as app
+
+    captured = {}
+
+    def fake_status(label, state=None):
+        captured["label"] = label
+        captured["state"] = state
+
+    monkeypatch.setattr("frontend.app.st.status", fake_status)
+    monkeypatch.setattr(
+        "frontend.app._render_trace",
+        lambda events: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app._complete_live_workspace",
+        lambda client, report_id: None,
+    )
+
+    app.st.session_state = {
+        "selected_report_id": "report-1",
+        "selected_topic": "Failure test",
+        "current_trace": type(
+            "Trace",
+            (),
+            {
+                "report_id": "report-1",
+                "status": app.ExecutionStatus.FAILED,
+                "events": [],
+            },
+        )(),
+    }
+
+    app._render_live_workspace(object())
+
+    assert captured["state"] == "error"

@@ -594,7 +594,14 @@ def _render_live_workspace(client: ResearchAPIClient) -> None:
             _render_stepper(trace.events, attempt)
 
     status_text = trace.status.value.capitalize()
-    st.status(status_text, state="complete" if trace.status is not ExecutionStatus.RUNNING else "running")
+
+    status_state = {
+        ExecutionStatus.RUNNING: "running",
+        ExecutionStatus.COMPLETED: "complete",
+        ExecutionStatus.FAILED: "error",
+    }[trace.status]
+
+    st.status(status_text, state=status_state)
 
     _render_trace(trace.events)
 
