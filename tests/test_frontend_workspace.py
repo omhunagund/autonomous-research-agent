@@ -6,11 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 from frontend.app import (
+    _attempt_purposes,
     _citation_links_html,
     _current_stage,
     _event_completed,
     _history_topic_label,
     _jump_to_latest_html,
+    _render_stepper,
     _render_trace,
     _source_lookup,
     _trace_event_signature,
@@ -63,6 +65,8 @@ def test_current_stage_ignores_orchestrator_events() -> None:
         ("analysis", "writing_completed", False),
     ],
 )
+
+
 def test_event_completed(stage: str, event_type: str, expected: bool) -> None:
     assert _event_completed([_event(stage, event_type)], stage) is expected
 
@@ -98,6 +102,7 @@ def test_trace_event_signature_follows_event_order() -> None:
         _event("analysis", "analysis_completed"),
     ]
     assert _trace_event_signature(events) == tuple(event.event_id for event in events)
+
 
 def test_trace_events_are_rendered_grouped_by_attempt(monkeypatch) -> None:
     rendered: list[str] = []
@@ -174,6 +179,7 @@ def test_jump_to_latest_uses_dependency_free_anchor() -> None:
     assert 'role="button"' not in rendered
     assert "Jump to latest" in rendered
 
+
 def test_history_topic_label_keeps_short_topic_unchanged() -> None:
     topic = "AI in healthcare"
 
@@ -191,6 +197,7 @@ def test_history_topic_label_truncates_long_topic_with_ellipsis() -> None:
     assert result.endswith("…")
     assert len(result) <= 42
     assert result != topic
+
 
 def test_terminal_completion_refreshes_active_and_history(monkeypatch) -> None:
     calls = []
@@ -230,6 +237,7 @@ def test_terminal_failure_refreshes_active_but_not_history(monkeypatch) -> None:
     )
 
     assert calls == ["active"]
+
 
 def test_complete_live_workspace_reuses_loaded_report(monkeypatch) -> None:
     calls = {"count": 0}
@@ -314,6 +322,7 @@ def test_complete_live_workspace_sets_report_error_when_initial_load_fails(monke
 
     assert app.st.session_state["report_error"] == "Report unavailable"
 
+
 def test_start_research_does_not_store_report_execution_future(monkeypatch) -> None:
     import frontend.app as app
 
@@ -338,6 +347,7 @@ def test_start_research_does_not_store_report_execution_future(monkeypatch) -> N
 
     assert submit_calls == ["report-1"]
     assert "execution_future" not in app.st.session_state
+
 
 def test_terminal_trace_requests_full_app_rerun(monkeypatch) -> None:
     import frontend.app as app
@@ -397,6 +407,7 @@ def test_terminal_failure_requests_full_app_rerun(monkeypatch) -> None:
 
     assert rerun_calls == [True]
 
+
 def test_streamlit_status_state_distinguishes_failed_execution(monkeypatch) -> None:
     import frontend.app as app
 
@@ -433,6 +444,7 @@ def test_streamlit_status_state_distinguishes_failed_execution(monkeypatch) -> N
     app._render_live_workspace(object())
 
     assert captured["state"] == "error"
+
 
 def test_reference_url_allows_http_and_https(monkeypatch) -> None:
     import frontend.app as app
@@ -508,6 +520,7 @@ def test_reference_url_rejects_non_http_scheme(monkeypatch) -> None:
     assert 'href="javascript:alert(1)"' not in joined
     assert "Unsafe source" in joined
 
+
 def test_live_workspace_new_research_resets_workspace_without_clearing_active(monkeypatch) -> None:
     import frontend.app as app
 
@@ -559,6 +572,7 @@ def test_live_workspace_new_research_resets_workspace_without_clearing_active(mo
     assert app.st.session_state["polling_active"] is False
     assert len(app.st.session_state["active_research"]) == 1
     assert rerun_calls == [True]
+
 
 def test_active_research_selected_state_is_distinguished(monkeypatch) -> None:
     import frontend.app as app
@@ -624,3 +638,79 @@ def test_active_research_selected_state_is_distinguished(monkeypatch) -> None:
 
     assert rendered_labels[0] == "First research  \nRunning · Attempt 1"
     assert rendered_labels[1] == "• Second research  \nRunning · Attempt 2"
+
+
+def test_attempt_purposes_derive_writing_correction_from_event() -> None:
+    events = [
+        _event("research", "research_completed", attempt=1),
+        _event("critic", "critic_review_completed", attempt=1),
+        _event("writing", "writing_correction_started", attempt=1),
+        _event("writing", "writing_correction_completed", attempt=1),
+        _event("critic", "critic_review_started", attempt=2),
+        _event("critic", "critic_review_completed", attempt=2),
+    ]
+
+    assert _attempt_purposes(events) == {
+        1: "Initial research",
+        2: "Writing correction",
+    }
+
+
+def test_stepper_renders_only_stages_executed_in_attempt(monkeypatch) -> None:
+    rendered: list[str] = []
+
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda value, **kwargs: rendered.append(value),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.caption",
+        lambda value: rendered.append(f"CAPTION:{value}"),
+    )
+
+    events = [
+        _event("writing", "writing_correction_started", attempt=1),
+        _event("writing", "writing_correction_completed", attempt=1),
+        _event("critic", "critic_review_started", attempt=2),
+        _event("critic", "critic_review_completed", attempt=2),
+    ]
+
+    _render_stepper(events, 2, "Writing correction")
+
+    output = "\n".join(rendered)
+
+    assert "Attempt 2 — Writing correction" in output
+    assert "Writing" in output
+    assert "Critic" in output
+    assert "Research" not in output
+    assert "Analysis" not in output
+
+
+def test_render_trace_renders_detailed_events(monkeypatch) -> None:
+    rendered: list[str] = []
+
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda value, **kwargs: rendered.append(value),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.caption",
+        lambda value: rendered.append(f"CAPTION:{value}"),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.subheader",
+        lambda value: rendered.append(f"SUBHEADER:{value}"),
+    )
+
+    events = [
+        _event("research", "research_completed"),
+        _event("analysis", "analysis_completed"),
+    ]
+
+    _render_trace(events)
+
+    output = "\n".join(rendered)
+
+    assert "Research" in output
+    assert "Analysis" in output
+    assert "event" in output

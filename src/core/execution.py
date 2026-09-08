@@ -192,7 +192,14 @@ class ResearchExecutionService:
         except (ExecutionConflictError, ExecutionNotFoundError):
             raise
         except Exception as exc:
-            self._mark_failed_best_effort(report_id, max(1, state.retry_count + 1) if "state" in locals() else 1)
+            logger.exception(
+                "Research execution failed for report_id=%s",
+                report_id,
+            )
+            self._mark_failed_best_effort(
+                report_id,
+                max(1, state.retry_count + 1) if "state" in locals() else 1,
+            )
             raise ResearchExecutionError(report_id, exc) from exc
         finally:
             self._release_execution(report_id)

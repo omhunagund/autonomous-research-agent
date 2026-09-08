@@ -27,11 +27,26 @@ LANDING_COPY = (
     "report, and critique it for gaps, conflicts, and quality."
 )
 
-ATTEMPT_LABELS = {
-    1: "Attempt 1 — Initial research",
-    2: "Attempt 2 — Research correction",
-    3: "Attempt 3 — Writing correction",
+CORRECTION_LABELS = {
+    "research_correction_started": "Research correction",
+    "writing_correction_started": "Writing correction",
 }
+
+
+def _attempt_purposes(events: list[TraceEvent]) -> dict[int, str]:
+    """Derive each attempt's purpose from the actual ordered correction events."""
+    purposes: dict[int, str] = {1: "Initial research"}
+    next_attempt = 2
+
+    for event in events:
+        label = CORRECTION_LABELS.get(event.event_type)
+        if label is None:
+            continue
+
+        purposes.setdefault(next_attempt, label)
+        next_attempt += 1
+
+    return purposes
 
 STAGE_LABELS = {
     "orchestrator": "Orchestrator",
@@ -52,7 +67,7 @@ STAGE_EVENT_TYPES = {
 def _configure_page() -> None:
     st.set_page_config(
         page_title="Autonomous Research & Report Agent",
-        page_icon="🧭",
+        page_icon="🔍",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -488,6 +503,7 @@ def _event_completed(events: list[TraceEvent], stage: str) -> bool:
         "writing": {"writing_completed", "writing_correction_completed"},
         "critic": {"critic_review_completed"},
     }.get(stage, set())
+
     return any(event.event_type in terminal for event in events)
 
 
@@ -498,27 +514,68 @@ def _current_stage(events: list[TraceEvent]) -> str | None:
     return None
 
 
-def _render_stepper(events: list[TraceEvent], attempt: int) -> None:
-    attempt_events = [event for event in events if event.attempt == attempt]
+def _render_stepper(
+    events: list[TraceEvent],
+    attempt: int,
+    purpose: str,
+) -> None:
+    attempt_events = [
+        event
+        for event in events
+        if event.attempt == attempt
+    ]
+
+    workflow_stages = ("research", "analysis", "writing", "critic")
+
+    executed_stages = [
+        stage
+        for stage in workflow_stages
+        if any(event.stage == stage for event in attempt_events)
+    ]
+
+    if not executed_stages:
+        return
+
     current = _current_stage(attempt_events)
 
     st.markdown(
-        f'<div class="attempt-heading">{html.escape(ATTEMPT_LABELS.get(attempt, f"Attempt {attempt}"))}</div>',
+        f'<div class="attempt-heading">'
+        f'{html.escape(f"Attempt {attempt} — {purpose}")}'
+        f'</div>',
         unsafe_allow_html=True,
     )
-    stages = ["research", "analysis", "writing", "critic"]
+
     chunks: list[str] = ['<div class="stepper">']
-    for index, stage in enumerate(stages):
+
+    for index, stage in enumerate(executed_stages):
         complete = _event_completed(attempt_events, stage)
-        cls = "step complete" if complete else ("step current" if current == stage else "step")
-        icon = "✓" if complete else ("●" if current == stage else "○")
+
+        if complete:
+            cls = "step complete"
+            icon = "✓"
+        elif current == stage:
+            cls = "step current"
+            icon = "●"
+        else:
+            cls = "step"
+            icon = "○"
+
         chunks.append(
-            f'<span class="{cls}">{icon} {html.escape(STAGE_LABELS[stage])}</span>'
+            f'<span class="{cls}">'
+            f'{icon} {html.escape(STAGE_LABELS[stage])}'
+            f'</span>'
         )
-        if index < len(stages) - 1:
+
+        if index < len(executed_stages) - 1:
             chunks.append('<span class="connector">→</span>')
+
     chunks.append("</div>")
-    st.markdown("".join(chunks), unsafe_allow_html=True)
+
+    st.markdown(
+        "".join(chunks),
+        unsafe_allow_html=True,
+    )
+
     if current:
         st.caption(f"Current stage: {STAGE_LABELS[current]}")
 
@@ -532,40 +589,55 @@ def _jump_to_latest_html() -> str:
     """Render a dependency-free browser anchor styled as a jump control."""
     return (
         '<a class="jump-latest" href="#trace-latest" '
-        'aria-label="Jump to the latest workflow trace event">↓ Jump to latest</a>'
+        'aria-label="Jump to the latest workflow trace event">'
+        '↓ Jump to latest'
+        '</a>'
     )
 
 
 def _render_trace(events: list[TraceEvent]) -> None:
     st.subheader("Live workflow trace")
+
     if not events:
         st.caption("Waiting for the first workflow event…")
         return
 
     current_signature = _trace_event_signature(events)
-    previous_signature = st.session_state.get("trace_seen_event_ids", tuple())
+    previous_signature = st.session_state.get(
+        "trace_seen_event_ids",
+        tuple(),
+    )
+
     if previous_signature and current_signature != previous_signature:
         st.session_state["trace_has_new_events"] = True
+
     st.session_state["trace_seen_event_ids"] = current_signature
 
     toolbar_parts = ['<div class="trace-toolbar">']
+
     if st.session_state.get("trace_has_new_events"):
-        toolbar_parts.append('<span class="trace-new-events">New trace events are available below.</span>')
+        toolbar_parts.append(
+            '<span class="trace-new-events">'
+            'New trace events are available below.'
+            '</span>'
+        )
     else:
-        toolbar_parts.append('<span></span>')
+        toolbar_parts.append("<span></span>")
+
     toolbar_parts.append(_jump_to_latest_html())
-    toolbar_parts.append('</div>')
-    st.markdown("".join(toolbar_parts), unsafe_allow_html=True)
+    toolbar_parts.append("</div>")
+
+    st.markdown(
+        "".join(toolbar_parts),
+        unsafe_allow_html=True,
+    )
 
     attempts = sorted({event.attempt for event in events})
+    purposes = _attempt_purposes(events)
 
     for attempt in attempts:
-        st.markdown(
-            f'<div class="attempt-heading">'
-            f'{html.escape(ATTEMPT_LABELS.get(attempt, f"Attempt {attempt}"))}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        purpose = purposes.get(attempt, "Research")
+        _render_stepper(events, attempt, purpose)
 
         attempt_events = [event for event in events if event.attempt == attempt]
 
@@ -579,10 +651,6 @@ def _render_trace(events: list[TraceEvent]) -> None:
             )
 
     st.markdown('<div id="trace-latest"></div>', unsafe_allow_html=True)
-    if st.session_state.get("trace_has_new_events"):
-        if st.button("Mark as caught up", key="trace_caught_up", help="Hide the new-event notice until another trace event arrives."):
-            st.session_state["trace_has_new_events"] = False
-            st.rerun()
 
 def _reset_to_landing() -> None:
     """Reset the current workspace without affecting active executions."""
@@ -628,11 +696,6 @@ def _render_live_workspace(client: ResearchAPIClient) -> None:
         f'<div>Report ID: <code>{html.escape(report_id)}</code></div></div>',
         unsafe_allow_html=True,
     )
-
-    if trace.events:
-        attempts = sorted({event.attempt for event in trace.events})
-        for attempt in attempts:
-            _render_stepper(trace.events, attempt)
 
     status_text = trace.status.value.capitalize()
 
