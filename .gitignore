@@ -30,4 +30,5 @@ dist/
 # Application-generated files
 *.log
 
-data/*.db
+data/
+project_tree.txt
