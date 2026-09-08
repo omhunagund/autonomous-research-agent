@@ -11,6 +11,7 @@ from frontend.app import (
     _event_completed,
     _history_topic_label,
     _jump_to_latest_html,
+    _render_trace,
     _source_lookup,
     _trace_event_signature,
 )
@@ -97,6 +98,73 @@ def test_trace_event_signature_follows_event_order() -> None:
         _event("analysis", "analysis_completed"),
     ]
     assert _trace_event_signature(events) == tuple(event.event_id for event in events)
+
+def test_trace_events_are_rendered_grouped_by_attempt(monkeypatch) -> None:
+    rendered: list[str] = []
+
+    monkeypatch.setattr(
+        "frontend.app._jump_to_latest_html",
+        lambda: "",
+    )
+    monkeypatch.setattr(
+        "frontend.app._trace_event_signature",
+        lambda events: tuple(event.event_id for event in events),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st",
+        SimpleNamespace(
+            subheader=lambda value: rendered.append(f"SUBHEADER:{value}"),
+            caption=lambda value: rendered.append(f"CAPTION:{value}"),
+            markdown=lambda value, **kwargs: rendered.append(value),
+            session_state={
+                "trace_seen_event_ids": tuple(),
+                "trace_has_new_events": False,
+            },
+        ),
+    )
+
+    events = [
+        _event(
+            "research",
+            event_type="research_started",
+            attempt=1,
+        ),
+        _event(
+            "analysis",
+            event_type="analysis_completed",
+            attempt=1,
+        ),
+        _event(
+            "research",
+            event_type="research_started",
+            attempt=2,
+        ),
+        _event(
+            "critic",
+            event_type="critic_review_completed",
+            attempt=2,
+        ),
+    ]
+
+    _render_trace(events)
+
+    output = "\n".join(rendered)
+
+    first_attempt = output.index("Attempt 1")
+    second_attempt = output.index("Attempt 2")
+
+    assert first_attempt < second_attempt
+
+    attempt_1_output = output[first_attempt:second_attempt]
+    attempt_2_output = output[second_attempt:]
+
+    assert "Research" in attempt_1_output
+    assert "Analysis" in attempt_1_output
+    assert "Attempt 1" in attempt_1_output
+
+    assert "Research" in attempt_2_output
+    assert "Critic" in attempt_2_output
+    assert "Attempt 2" in attempt_2_output
 
 
 def test_jump_to_latest_uses_dependency_free_anchor() -> None:
@@ -491,3 +559,68 @@ def test_live_workspace_new_research_resets_workspace_without_clearing_active(mo
     assert app.st.session_state["polling_active"] is False
     assert len(app.st.session_state["active_research"]) == 1
     assert rerun_calls == [True]
+
+def test_active_research_selected_state_is_distinguished(monkeypatch) -> None:
+    import frontend.app as app
+
+    rendered_labels = []
+
+    class FakeSidebar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    class FakeItem:
+        def __init__(self, report_id: str, topic: str, attempt: int) -> None:
+            self.report_id = report_id
+            self.topic = topic
+            self.attempt = attempt
+            self.status = app.ExecutionStatus.RUNNING
+
+    active_items = [
+        FakeItem("report-1", "First research", 1),
+        FakeItem("report-2", "Second research", 2),
+    ]
+
+    app.st.session_state = {
+        "active_research": active_items,
+        "active_error": None,
+        "history_error": None,
+        "history": [],
+        "selected_report_id": "report-2",
+        "workspace_mode": "live",
+    }
+
+    monkeypatch.setattr(
+        "frontend.app.st.sidebar",
+        FakeSidebar(),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.subheader",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.caption",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.error",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.button",
+        lambda label, **kwargs: (
+            rendered_labels.append(label) or False
+        ),
+    )
+
+    app._render_sidebar(object())
+
+    assert rendered_labels[0] == "First research  \nRunning · Attempt 1"
+    assert rendered_labels[1] == "• Second research  \nRunning · Attempt 2"

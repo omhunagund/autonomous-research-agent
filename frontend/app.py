@@ -1,7 +1,7 @@
 """Streamlit live research workspace."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import html
 import re
 from typing import Any
@@ -372,7 +372,14 @@ def _render_sidebar(client: ResearchAPIClient) -> None:
                     _refresh_active(client)
                     st.rerun()
             for item in active:
-                label = f"{item.topic}  \nRunning · Attempt {item.attempt}"
+                selected = (
+                    item.report_id == st.session_state.get("selected_report_id")
+                    and st.session_state.get("workspace_mode") == "live"
+                )
+                label = (
+                    f"{'• ' if selected else ''}"
+                    f"{item.topic}  \nRunning · Attempt {item.attempt}"
+                )
                 if st.button(
                     label,
                     key=f"active_{item.report_id}",
@@ -549,14 +556,26 @@ def _render_trace(events: list[TraceEvent]) -> None:
     toolbar_parts.append('</div>')
     st.markdown("".join(toolbar_parts), unsafe_allow_html=True)
 
-    for event in events:
+    attempts = sorted({event.attempt for event in events})
+
+    for attempt in attempts:
         st.markdown(
-            f'<div class="trace-row">'
-            f'<div class="trace-stage">{html.escape(event.stage.title())}</div>'
-            f'<div class="trace-message">{html.escape(event.message)}</div>'
+            f'<div class="attempt-heading">'
+            f'{html.escape(ATTEMPT_LABELS.get(attempt, f"Attempt {attempt}"))}'
             f'</div>',
             unsafe_allow_html=True,
         )
+
+        attempt_events = [event for event in events if event.attempt == attempt]
+
+        for event in attempt_events:
+            st.markdown(
+                f'<div class="trace-row">'
+                f'<div class="trace-stage">{html.escape(event.stage.title())}</div>'
+                f'<div class="trace-message">{html.escape(event.message)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown('<div id="trace-latest"></div>', unsafe_allow_html=True)
     if st.session_state.get("trace_has_new_events"):
