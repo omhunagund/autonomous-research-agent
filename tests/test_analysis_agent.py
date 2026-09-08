@@ -351,8 +351,11 @@ def test_analyze_research_fails_after_validation_retry_budget() -> None:
         gaps=[],
     )
 
-    with pytest.raises(AnalysisValidationError):
+    with pytest.raises(AnalysisValidationError) as exc_info:
         analyze_research(state, mock_llm)
+
+    assert "unknown supporting source IDs" in str(exc_info.value)
+    assert exc_info.value.reason is not None
 
     assert mock_llm.invoke_structured.call_count == ANALYSIS_RETRY_LIMIT + 1
 

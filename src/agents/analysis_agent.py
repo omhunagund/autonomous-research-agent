@@ -42,6 +42,12 @@ ANALYSIS_RETRY_LIMIT = 2
 class AnalysisValidationError(RuntimeError):
     """Raised when the LLM analysis cannot satisfy deterministic validation."""
 
+    def __init__(self, message: str, reason: str | None = None) -> None:
+        self.reason = reason
+        if reason:
+            message = f"{message} Last validation failure: {reason}"
+        super().__init__(message)
+
 
 def _source_context(
     sources: list[Source],
@@ -311,7 +317,8 @@ def analyze_research(
 
     raise AnalysisValidationError(
         "Unable to produce a valid analysis after "
-        f"{ANALYSIS_RETRY_LIMIT} validation retries."
+        f"{ANALYSIS_RETRY_LIMIT} validation retries.",
+        reason=feedback,
     )
 
 

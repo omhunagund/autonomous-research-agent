@@ -576,7 +576,12 @@ def _render_stepper(
         unsafe_allow_html=True,
     )
 
-    if current:
+    all_stages_complete = all(
+        _event_completed(attempt_events, stage)
+        for stage in executed_stages
+    )
+
+    if current and not all_stages_complete:
         st.caption(f"Current stage: {STAGE_LABELS[current]}")
 
 
@@ -615,7 +620,12 @@ def _render_trace(events: list[TraceEvent]) -> None:
 
     toolbar_parts = ['<div class="trace-toolbar">']
 
-    if st.session_state.get("trace_has_new_events"):
+    terminal = any(
+        event.event_type in {"execution_completed", "execution_failed"}
+        for event in events
+    )
+
+    if st.session_state.get("trace_has_new_events") and not terminal:
         toolbar_parts.append(
             '<span class="trace-new-events">'
             'New trace events are available below.'

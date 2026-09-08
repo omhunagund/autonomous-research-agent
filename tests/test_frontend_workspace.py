@@ -714,3 +714,34 @@ def test_render_trace_renders_detailed_events(monkeypatch) -> None:
     assert "Research" in output
     assert "Analysis" in output
     assert "event" in output
+
+
+def test_render_trace_hides_new_event_notice_for_terminal_execution(
+    monkeypatch,
+) -> None:
+    rendered: list[str] = []
+
+    monkeypatch.setattr(
+        "frontend.app.st.markdown",
+        lambda value, **kwargs: rendered.append(value),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.caption",
+        lambda value: rendered.append(f"CAPTION:{value}"),
+    )
+    monkeypatch.setattr(
+        "frontend.app.st.subheader",
+        lambda value: rendered.append(f"SUBHEADER:{value}"),
+    )
+
+    events = [
+        _event("research", "research_completed"),
+        _event("orchestrator", "execution_completed"),
+    ]
+
+    _render_trace(events)
+
+    output = "\n".join(rendered)
+
+    assert "New trace events are available below." not in output
+    assert "↓ Jump to latest" in output
