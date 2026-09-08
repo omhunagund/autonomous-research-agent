@@ -13,6 +13,7 @@ from src.agents.critic_agent import (
 )
 from src.models.schemas import (
     Critique,
+    CritiqueAssessment,
     CritiqueCheck,
     ConfidenceLevel,
     Conflict,
@@ -337,21 +338,30 @@ def test_critic_uses_feedback_retry() -> None:
 
     mock_llm = Mock()
     mock_llm.invoke_structured.side_effect = [
-        _critique(
+        CritiqueAssessment(
             faithfulness=CritiqueCheck.FAIL,
-            verdict=CritiqueCheck.PASS,
-            issues=["[WRITING] Incorrectly consistent provisional response."],
+            coverage=CritiqueCheck.PASS,
+            recency=CritiqueCheck.PASS,
+            balance=CritiqueCheck.PASS,
+            issues=[
+                "[RESEARCH] Incorrect category for the failed faithfulness check."
+            ],
         ),
-        _critique(
+        CritiqueAssessment(
+            faithfulness=CritiqueCheck.PASS,
             coverage=CritiqueCheck.FAIL,
-            verdict=CritiqueCheck.FAIL,
-            issues=["[RESEARCH] Sub-question 2 lacks sufficient retrieved evidence."],
+            recency=CritiqueCheck.PASS,
+            balance=CritiqueCheck.PASS,
+            issues=[
+                "[RESEARCH] Sub-question 2 lacks sufficient retrieved evidence."
+            ],
         ),
     ]
 
     critique, target = critique_report(state, mock_llm)
 
     assert critique.coverage == CritiqueCheck.FAIL
+    assert critique.verdict == CritiqueCheck.FAIL
     assert target == "research"
     assert mock_llm.invoke_structured.call_count == 2
 
@@ -361,10 +371,12 @@ def test_critic_fails_after_validation_retry_budget() -> None:
     from unittest.mock import Mock
 
     mock_llm = Mock()
-    mock_llm.invoke_structured.return_value = _critique(
+    mock_llm.invoke_structured.return_value = CritiqueAssessment(
         faithfulness=CritiqueCheck.FAIL,
-        verdict=CritiqueCheck.PASS,
-        issues=["[WRITING] Inconsistent response."],
+        coverage=CritiqueCheck.PASS,
+        recency=CritiqueCheck.PASS,
+        balance=CritiqueCheck.PASS,
+        issues=["[RESEARCH] Inconsistent response."],
     )
 
     with pytest.raises(CritiqueValidationError):
@@ -380,3 +392,24 @@ def test_info_is_allowed_with_all_pass() -> None:
     valid, reason = _validate_critique(critique)
     assert valid
     assert reason == ""
+
+
+def test_critique_report_derives_verdict_from_component_checks() -> None:
+    state = _state()
+    from unittest.mock import Mock
+
+    mock_llm = Mock()
+    mock_llm.invoke_structured.return_value = CritiqueAssessment(
+        faithfulness=CritiqueCheck.PASS,
+        coverage=CritiqueCheck.FAIL,
+        recency=CritiqueCheck.PASS,
+        balance=CritiqueCheck.PASS,
+        issues=[
+            "[RESEARCH] Sub-question 2 lacks sufficient retrieved evidence."
+        ],
+    )
+
+    critique, target = critique_report(state, mock_llm)
+
+    assert critique.verdict == CritiqueCheck.FAIL
+    assert target == "research"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.core.llm import _build_json_schema
-from src.models.schemas import InternalAnalysis
+from src.models.schemas import CritiqueAssessment, InternalAnalysis
 
 
 def _object_schemas(node):
@@ -32,3 +32,11 @@ def test_gap_nullable_fields_are_required_for_groq() -> None:
     assert "related_claim" in gap_schema["required"]
     assert gap_schema["properties"]["related_sub_question"]["anyOf"][-1] == {"type": "null"}
     assert gap_schema["properties"]["related_claim"]["anyOf"][-1] == {"type": "null"}
+
+def test_critique_assessment_schema_does_not_require_verdict() -> None:
+    schema = _build_json_schema(CritiqueAssessment)
+
+    properties = schema["properties"]
+
+    assert "verdict" not in properties
+    assert set(schema["required"]) == set(properties)

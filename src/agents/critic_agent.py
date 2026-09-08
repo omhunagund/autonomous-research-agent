@@ -26,6 +26,7 @@ from src.core.evidence_compaction import compact_sources_for_prompt
 from src.core.llm import LLMService
 from src.models.schemas import (
     Critique,
+    CritiqueAssessment,
     CritiqueCheck,
     FinalReport,
     ResearchState,
@@ -307,9 +308,8 @@ def _critic_messages(
         "specific sub-questions, sources, passages, or discrepancies where "
         "possible. One underlying defect may legitimately produce distinct "
         "issues for multiple checks.\n\n"
-        "VERDICT: the caller will derive the final verdict deterministically "
-        "from the four check results. Return the verdict field consistently, "
-        "but never rely on it as the authoritative aggregate."
+        "Do not return an aggregate verdict field. The application will derive "
+        "the final verdict deterministically from the four component checks."
     )
 
     user = (
@@ -440,12 +440,36 @@ def critique_report(
     feedback: str | None = None
 
     for attempt in range(CRITIC_RETRY_LIMIT + 1):
-        critique = llm_service.invoke_structured(
+        assessment = llm_service.invoke_structured(
             _critic_messages(state, feedback),
-            Critique,
+            CritiqueAssessment,
+        )
+
+        verdict = (
+            CritiqueCheck.PASS
+            if all(
+                check == CritiqueCheck.PASS
+                for check in (
+                    assessment.faithfulness,
+                    assessment.coverage,
+                    assessment.recency,
+                    assessment.balance,
+                )
+            )
+            else CritiqueCheck.FAIL
+        )
+
+        critique = Critique(
+            faithfulness=assessment.faithfulness,
+            coverage=assessment.coverage,
+            recency=assessment.recency,
+            balance=assessment.balance,
+            verdict=verdict,
+            issues=assessment.issues,
         )
 
         valid, reason = _validate_critique(critique)
+
         if valid:
             target = derive_revision_target(critique)
             return critique, target

@@ -129,6 +129,14 @@ class InternalReportDraft(BaseModel):
     conflict_drafts: list[WrittenConflictDraft]
 
 
+class CritiqueAssessment(BaseModel):
+    faithfulness: CritiqueCheck
+    coverage: CritiqueCheck
+    recency: CritiqueCheck
+    balance: CritiqueCheck
+    issues: list[str]
+
+
 class Critique(BaseModel):
     faithfulness: CritiqueCheck
     coverage: CritiqueCheck
