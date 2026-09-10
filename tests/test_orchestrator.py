@@ -363,3 +363,42 @@ def test_final_report_schema_exposes_analysis_and_unresolved_issue_fields() -> N
 
     assert report.analysis_issues == []
     assert report.unresolved_issues == []
+
+
+def test_research_correction_continues_after_local_query_recovery(
+    monkeypatch,
+) -> None:
+    state = _state()
+    llm = Mock()
+
+    llm.invoke_structured.side_effect = _output_parse_failed_error(
+        'Need queries: "latest patient outcome evidence".'
+    )
+
+    candidates = [
+        SearchResult(
+            title="Recovered candidate",
+            url="https://recovered.example/1",
+            snippet="evidence",
+        )
+    ]
+
+    monkeypatch.setattr(
+        "src.agents.orchestrator.web_search",
+        lambda query, max_results: candidates,
+    )
+    monkeypatch.setattr(
+        "src.agents.research_agent.fetch_page_content",
+        lambda url: "usable evidence " * 40,
+    )
+
+    updated, recovered = run_research_correction(
+        state,
+        [f'[RESEARCH] Sub-question: "{Q1}" needs current evidence.'],
+        llm,
+    )
+
+    assert recovered is True
+    assert updated.sources[-1].url == "https://recovered.example/1"
+    assert updated.sources[-1].search_queries == [Q1]
+    assert llm.invoke_structured.call_count == 1
