@@ -130,7 +130,10 @@ def _critique(
 
 def test_all_pass_derives_pass() -> None:
     critique = _critique()
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert valid
     assert reason == ""
     assert derive_revision_target(critique) == "none"
@@ -142,7 +145,10 @@ def test_verdict_is_deterministically_consistent() -> None:
         verdict=CritiqueCheck.PASS,
         issues=["[WRITING] The summary overstates Finding 1."],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert not valid
     assert "verdict is inconsistent" in reason
 
@@ -151,9 +157,15 @@ def test_fail_requires_check_compatible_issue() -> None:
     critique = _critique(
         faithfulness=CritiqueCheck.FAIL,
         verdict=CritiqueCheck.FAIL,
-        issues=["[RESEARCH] Missing evidence exists for another sub-question."],
+        issues=[
+            '[RESEARCH] "What evidence supports improved patient outcomes?" '
+            "is missing sufficient evidence."
+        ],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert not valid
     assert "faithfulness is FAIL" in reason
 
@@ -164,19 +176,33 @@ def test_info_cannot_explain_failure_by_itself() -> None:
         verdict=CritiqueCheck.FAIL,
         issues=["[INFO] The wording could be more concise."],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert not valid
     assert "compatible" in reason or "INFO" in reason
 
 
 def test_coverage_accepts_research_writing_or_analysis_categories() -> None:
     for category in ("RESEARCH", "WRITING", "ANALYSIS"):
+        if category == "RESEARCH":
+            issue = (
+                '[RESEARCH] "What are the major deployment risks and limitations?" '
+                "lacks meaningful treatment."
+            )
+        else:
+            issue = f"[{category}] Sub-question 2 lacks meaningful treatment."
+
         critique = _critique(
             coverage=CritiqueCheck.FAIL,
             verdict=CritiqueCheck.FAIL,
-            issues=[f"[{category}] Sub-question 2 lacks meaningful treatment."],
+            issues=[issue],
         )
-        valid, reason = _validate_critique(critique)
+        valid, reason = _validate_critique(
+            critique,
+            _state().sub_questions,
+        )
         assert valid, (category, reason)
 
 
@@ -186,7 +212,10 @@ def test_recency_rejects_analysis_category() -> None:
         verdict=CritiqueCheck.FAIL,
         issues=["[ANALYSIS] Current evidence was not retrieved."],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert not valid
     assert "recency is FAIL" in reason
 
@@ -197,7 +226,10 @@ def test_balance_accepts_analysis_category() -> None:
         verdict=CritiqueCheck.FAIL,
         issues=["[ANALYSIS] A material perspective is absent from the baseline."],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert valid
     assert reason == ""
 
@@ -208,7 +240,10 @@ def test_issue_prefix_requires_explanatory_text() -> None:
         verdict=CritiqueCheck.FAIL,
         issues=["[WRITING]"],
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert not valid
     assert "issue 1" in reason
 
@@ -353,7 +388,8 @@ def test_critic_uses_feedback_retry() -> None:
             recency=CritiqueCheck.PASS,
             balance=CritiqueCheck.PASS,
             issues=[
-                "[RESEARCH] Sub-question 2 lacks sufficient retrieved evidence."
+                "[RESEARCH] \"What evidence supports improved patient outcomes?\" "
+                "lacks sufficient retrieved evidence."
             ],
         ),
     ]
@@ -389,7 +425,10 @@ def test_info_is_allowed_with_all_pass() -> None:
     critique = _critique(
         issues=["[INFO] The report could use a shorter introductory sentence."]
     )
-    valid, reason = _validate_critique(critique)
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
     assert valid
     assert reason == ""
 
@@ -405,7 +444,8 @@ def test_critique_report_derives_verdict_from_component_checks() -> None:
         recency=CritiqueCheck.PASS,
         balance=CritiqueCheck.PASS,
         issues=[
-            "[RESEARCH] Sub-question 2 lacks sufficient retrieved evidence."
+            '[RESEARCH] "What are the major deployment risks and limitations?" '
+            'lacks sufficient retrieved evidence.'
         ],
     )
 
@@ -413,3 +453,59 @@ def test_critique_report_derives_verdict_from_component_checks() -> None:
 
     assert critique.verdict == CritiqueCheck.FAIL
     assert target == "research"
+
+
+def test_validation_accepts_research_issue_with_current_subquestion() -> None:
+    critique = _critique(
+        coverage=CritiqueCheck.FAIL,
+        verdict=CritiqueCheck.FAIL,
+        issues=[
+            '[RESEARCH] "What evidence supports improved patient outcomes?" '
+            "lacks sufficient evidence."
+        ],
+    )
+
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
+
+    assert valid
+    assert reason == ""
+
+
+def test_validation_rejects_research_issue_without_quoted_subquestion() -> None:
+    critique = _critique(
+        coverage=CritiqueCheck.FAIL,
+        verdict=CritiqueCheck.FAIL,
+        issues=[
+            "[RESEARCH] Evidence is insufficient across multiple sub-questions."
+        ],
+    )
+
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
+
+    assert not valid
+    assert "current sub-question in quotes" in reason
+
+
+def test_validation_rejects_research_issue_for_unknown_subquestion() -> None:
+    critique = _critique(
+        coverage=CritiqueCheck.FAIL,
+        verdict=CritiqueCheck.FAIL,
+        issues=[
+            '[RESEARCH] "What evidence supports a completely different outcome?" '
+            "lacks sufficient evidence."
+        ],
+    )
+
+    valid, reason = _validate_critique(
+        critique,
+        _state().sub_questions,
+    )
+
+    assert not valid
+    assert "current approved sub-question" in reason

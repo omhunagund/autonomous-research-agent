@@ -63,6 +63,46 @@ def _issue_categories(issues: Iterable[str]) -> set[str]:
     return categories
 
 
+def _normalize_sub_question(value: str) -> str:
+    return " ".join(value.lower().strip().split()).rstrip("?!.,;:")
+
+
+def _validate_research_issue_subquestion(
+    issue: str,
+    current_sub_questions: list[str],
+) -> tuple[bool, str]:
+    parsed = _parse_issue(issue)
+    if parsed is None:
+        return False, "issue format is invalid"
+
+    category, body = parsed
+    if category != "RESEARCH":
+        return True, ""
+
+    quoted = re.search(r'"([^"]+)"', body)
+    if quoted is None or not quoted.group(1).strip():
+        return False, (
+            "[RESEARCH] issue must contain exactly one current "
+            "sub-question in quotes"
+        )
+
+    quoted_normalized = _normalize_sub_question(quoted.group(1))
+    matches = [
+        question
+        for question in current_sub_questions
+        if _normalize_sub_question(question) == quoted_normalized
+    ]
+
+    if len(matches) != 1:
+        return False, (
+            "[RESEARCH] issue must quote exactly one current approved "
+            "sub-question verbatim; do not combine multiple sub-questions "
+            "into one issue"
+        )
+
+    return True, ""
+
+
 def _validate_reviewable_draft(state: ResearchState) -> None:
     """Defensively validate the provisional Writer artifact before review."""
     draft = state.draft
@@ -304,10 +344,15 @@ def _critic_messages(
         "least one of [RESEARCH]/[WRITING]/[ANALYSIS]. Recency FAIL requires "
         "[RESEARCH] or [WRITING]. Balance FAIL requires [WRITING] or "
         "[ANALYSIS]. [INFO] is for non-material observations and cannot be "
-        "the only explanation for a failed check. Issues should identify "
-        "specific sub-questions, sources, passages, or discrepancies where "
-        "possible. One underlying defect may legitimately produce distinct "
-        "issues for multiple checks.\n\n"
+        "the only explanation for a failed check. "
+        "For every [RESEARCH] issue, quote exactly one current approved "
+        "sub-question from the list above verbatim and identify the specific "
+        "evidence deficiency for that sub-question. Do not combine multiple "
+        "sub-questions into one [RESEARCH] issue. Create separate [RESEARCH] "
+        "issues when multiple sub-questions have separate evidence "
+        "deficiencies. [WRITING], [ANALYSIS], and [INFO] issues do not require "
+        "a quoted sub-question unless useful. One underlying defect may "
+        "legitimately produce distinct issues for multiple checks.\n\n"
         "Do not return an aggregate verdict field. The application will derive "
         "the final verdict deterministically from the four component checks."
     )
@@ -344,7 +389,10 @@ def _required_categories_for_check(
     }[check_name]
 
 
-def _validate_critique(critique: Critique) -> tuple[bool, str]:
+def _validate_critique(
+    critique: Critique,
+    current_sub_questions: list[str],
+) -> tuple[bool, str]:
     if critique.verdict not in {CritiqueCheck.PASS, CritiqueCheck.FAIL}:
         return False, "verdict must be PASS or FAIL"
 
@@ -381,6 +429,13 @@ def _validate_critique(critique: Critique) -> tuple[bool, str]:
                 f"issue {index} must begin with exactly one of "
                 f"{', '.join(ISSUE_PREFIXES)} followed by explanatory text"
             )
+
+        research_valid, research_reason = _validate_research_issue_subquestion(
+            issue,
+            current_sub_questions,
+        )
+        if not research_valid:
+            return False, f"issue {index}: {research_reason}"
 
     failed_checks = {
         "faithfulness": critique.faithfulness,
@@ -468,7 +523,10 @@ def critique_report(
             issues=assessment.issues,
         )
 
-        valid, reason = _validate_critique(critique)
+        valid, reason = _validate_critique(
+            critique,
+            state.sub_questions,
+        )
 
         if valid:
             target = derive_revision_target(critique)
