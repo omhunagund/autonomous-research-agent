@@ -5,8 +5,10 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from src.core.llm import (
+    LLMConfigurationError,
     LLMInvocationError,
     LLMService,
+    _get_required_env,
     _is_retryable_error,
 )
 
@@ -57,6 +59,28 @@ def test_conflict_error_is_not_retryable():
     assert _is_retryable_error(
         FakeConflictError("request conflict")
     ) is False
+
+
+def test_required_env_rejects_missing_or_empty_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TEST_REQUIRED_ENV", raising=False)
+
+    with pytest.raises(LLMConfigurationError, match="missing or empty"):
+        _get_required_env("TEST_REQUIRED_ENV")
+
+    monkeypatch.setenv("TEST_REQUIRED_ENV", "   ")
+
+    with pytest.raises(LLMConfigurationError, match="missing or empty"):
+        _get_required_env("TEST_REQUIRED_ENV")
+
+
+def test_required_env_strips_valid_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_REQUIRED_ENV", "  configured-value  ")
+
+    assert _get_required_env("TEST_REQUIRED_ENV") == "configured-value"
 
 
 # ---------------------------------------------------------------------------
