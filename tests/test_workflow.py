@@ -2,6 +2,7 @@
 import pytest
 
 from src.models.schemas import (
+    Analysis,
     Critique,
     CritiqueCheck,
     FinalReport,
@@ -12,6 +13,7 @@ from src.workflow import (
     _finalize_analysis,
     _finalize_pass,
     _finalize_unresolved_node,
+    _research_correction_node,
     _route_after_critic,
 )
 from src.agents.orchestrator import MAX_CORRECTION_CYCLES
@@ -237,3 +239,74 @@ def test_unresolved_finalize_sets_low_quality_and_unresolved_issues() -> None:
     assert result["final_report"].analysis_issues == []
     assert result["final_report"].unresolved_issues == issues
     assert result["revision_target"] == "none"
+
+
+def test_research_correction_logs_local_query_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sub_question = "What evidence supports improved patient outcomes?"
+    issue = (
+        f'[RESEARCH] Sub-question: "{sub_question}" needs current evidence.'
+    )
+
+    state = ResearchState(
+        report_id="550e8400-e29b-41d4-a716-446655440000",
+        user_topic="AI in healthcare",
+        memory_context=None,
+        sub_questions=[sub_question],
+        sources=[],
+        findings=[],
+        conflicts=[],
+        gaps=[],
+        research_limitations=[],
+        draft=_report(),
+        critique=_critique(
+            verdict=CritiqueCheck.FAIL,
+            issues=[issue],
+        ),
+        retry_count=0,
+        revision_target="research",
+        final_report=None,
+    )
+
+    updated_state = state.model_copy(update={"retry_count": 1})
+
+    monkeypatch.setattr(
+        "src.workflow.run_research_correction",
+        lambda state, research_issues, llm_service: (
+            updated_state,
+            True,
+        ),
+    )
+
+    monkeypatch.setattr(
+        "src.workflow.analyze_research",
+        lambda state, llm_service: Analysis(
+            findings=[],
+            conflicts=[],
+            gaps=[],
+        ),
+    )
+
+    events: list[dict] = []
+
+    def recorder(*args, **kwargs) -> None:
+        events.append(kwargs)
+
+    result = _research_correction_node(state, recorder)
+
+    assert result["retry_count"] == 1
+
+    recovery_events = [
+        event
+        for event in events
+        if event["event_type"] == "correction_query_generation_recovered"
+    ]
+
+    assert len(recovery_events) == 1
+    assert recovery_events[0]["stage"] == "research"
+    assert recovery_events[0]["attempt"] == 1
+    assert (
+        "local recovery from malformed structured output"
+        in recovery_events[0]["message"]
+    )

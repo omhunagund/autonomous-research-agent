@@ -3,14 +3,19 @@ from unittest.mock import Mock
 
 import pytest
 
+import httpx
+from groq import BadRequestError
+
 from src.agents.orchestrator import (
     CorrectionIssueMappingError,
     CorrectionQueryValidationError,
+    _extract_recovered_correction_queries,
     _validate_correction_queries,
     generate_correction_queries,
     group_research_issues,
     run_research_correction,
 )
+
 from src.models.schemas import (
     CorrectionQueryPlan,
     FinalReport,
@@ -119,9 +124,15 @@ def test_generate_correction_queries_retries_deterministic_validation() -> None:
         CorrectionQueryPlan(queries=["current evidence patient outcomes"]),
     ]
 
-    queries = generate_correction_queries("AI in healthcare", Q1, ("[RESEARCH] issue",), llm)
+    queries, recovered = generate_correction_queries(
+        "AI in healthcare",
+        Q1,
+        ("[RESEARCH] issue",),
+        llm,
+    )
 
     assert queries == ["current evidence patient outcomes"]
+    assert recovered is False
     assert llm.invoke_structured.call_count == 2
 
 
@@ -133,6 +144,128 @@ def test_generate_correction_queries_fails_after_retry_budget() -> None:
         generate_correction_queries("AI in healthcare", Q1, ("[RESEARCH] issue",), llm)
 
     assert llm.invoke_structured.call_count == 3
+
+
+def _output_parse_failed_error(failed_generation: str) -> BadRequestError:
+    response = httpx.Response(
+        400,
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
+    return BadRequestError(
+        "structured output parsing failed",
+        response=response,
+        body={
+            "error": {
+                "message": "Parsing failed.",
+                "type": "invalid_request_error",
+                "code": "output_parse_failed",
+                "failed_generation": failed_generation,
+            }
+        },
+    )
+
+
+def test_recover_correction_queries_from_quoted_failed_generation() -> None:
+    error = _output_parse_failed_error(
+        'Need queries: "GitHub Copilot productivity study" '
+        '"ChatGPT code quality defect rate" '
+        '"empirical evaluation of AI coding assistants" '
+        '"AI pair programming defect metrics".'
+    )
+
+    recovered = _extract_recovered_correction_queries(error)
+
+    assert recovered == [
+        "GitHub Copilot productivity study",
+        "ChatGPT code quality defect rate",
+        "empirical evaluation of AI coding assistants",
+    ]
+
+
+def test_recover_correction_queries_from_bulleted_failed_generation() -> None:
+    error = _output_parse_failed_error(
+        "Need queries:\n"
+        "- GitHub Copilot productivity study\n"
+        "- empirical evaluation of AI coding assistants\n"
+        "- Copilot impact on bug rates"
+    )
+
+    recovered = _extract_recovered_correction_queries(error)
+
+    assert recovered == [
+        "GitHub Copilot productivity study",
+        "empirical evaluation of AI coding assistants",
+        "Copilot impact on bug rates",
+    ]
+
+
+def test_unstructured_failed_generation_is_not_recovered() -> None:
+    error = _output_parse_failed_error(
+        "Need queries: recent industry reports, studies 2024-2026 on costs vs gains."
+    )
+
+    assert _extract_recovered_correction_queries(error) is None
+
+
+def test_non_output_parse_bad_request_is_not_recovered() -> None:
+    response = httpx.Response(
+        400,
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
+    error = BadRequestError(
+        "malformed request",
+        response=response,
+        body={
+            "error": {
+                "message": "Malformed request.",
+                "type": "invalid_request_error",
+                "code": "invalid_request",
+            }
+        },
+    )
+
+    assert _extract_recovered_correction_queries(error) is None
+
+    llm = Mock()
+    llm.invoke_structured.side_effect = error
+
+    with pytest.raises(BadRequestError):
+        generate_correction_queries(
+            "AI in software engineering",
+            Q1,
+            ("[RESEARCH] issue",),
+            llm,
+        )
+
+    assert llm.invoke_structured.call_count == 1
+
+
+def test_generate_correction_queries_recovers_without_second_llm_call() -> None:
+    llm = Mock()
+    llm.invoke_structured.side_effect = _output_parse_failed_error(
+        'Need queries: "GitHub Copilot productivity study" '
+        '"empirical evaluation of AI coding assistants".'
+    )
+
+    queries, recovered = generate_correction_queries(
+        "AI in software engineering",
+        Q1,
+        ("[RESEARCH] issue",),
+        llm,
+    )
+
+    assert queries == [
+        "GitHub Copilot productivity study",
+        "empirical evaluation of AI coding assistants",
+    ]
+    assert recovered is True
+    assert llm.invoke_structured.call_count == 1
 
 
 def test_research_correction_reuses_top3_selection_for_five_results(monkeypatch) -> None:
@@ -166,12 +299,13 @@ def test_research_correction_reuses_top3_selection_for_five_results(monkeypatch)
         lambda url: "usable evidence " * 40,
     )
 
-    updated = run_research_correction(
+    updated, recovered = run_research_correction(
         state,
         [f'[RESEARCH] Sub-question: "{Q1}" needs current evidence.'],
         llm,
     )
 
+    assert recovered is False
     assert len(updated.sources) == 7
     assert updated.sources[-1].citation_id == 7
     assert updated.research_limitations == []
@@ -202,12 +336,13 @@ def test_research_correction_preserves_existing_sources_and_removes_resolved_lim
         lambda url: "usable evidence " * 40,
     )
 
-    updated = run_research_correction(
+    updated, recovered = run_research_correction(
         state,
         [f'[RESEARCH] Sub-question 1 — "{Q1}" needs more evidence.'],
         llm,
     )
 
+    assert recovered is False
     assert [source.citation_id for source in updated.sources[:2]] == [1, 2]
     assert len(updated.sources) == 5
     assert updated.research_limitations == []

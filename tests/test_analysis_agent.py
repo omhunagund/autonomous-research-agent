@@ -339,6 +339,44 @@ def test_analyze_research_uses_feedback_retry() -> None:
     assert mock_llm.invoke_structured.call_count == 2
 
 
+def test_analyze_research_retries_unknown_gap_subquestion() -> None:
+    state = _state()
+    mock_llm = Mock()
+
+    valid_sub_question = state.sub_questions[0]
+
+    mock_llm.invoke_structured.side_effect = [
+        InternalAnalysis(
+            finding_assessments=[],
+            conflicts=[],
+            gaps=[
+                Gap(
+                    type=GapType.RESEARCH_GAP,
+                    description="Evidence remains insufficient.",
+                    related_sub_question="Paraphrased clinical use question",
+                )
+            ],
+        ),
+        InternalAnalysis(
+            finding_assessments=[],
+            conflicts=[],
+            gaps=[
+                Gap(
+                    type=GapType.RESEARCH_GAP,
+                    description="Evidence remains insufficient.",
+                    related_sub_question=valid_sub_question,
+                )
+            ],
+        ),
+    ]
+
+    result = analyze_research(state, mock_llm)
+
+    assert len(result.gaps) == 1
+    assert result.gaps[0].related_sub_question == valid_sub_question
+    assert mock_llm.invoke_structured.call_count == 2
+
+
 def test_analyze_research_fails_after_validation_retry_budget() -> None:
     state = _state()
     mock_llm = Mock()

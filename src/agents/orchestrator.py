@@ -7,6 +7,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
+from groq import BadRequestError
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.analysis_agent import analyze_research
@@ -140,8 +142,11 @@ def _correction_query_messages(
         "that directly address the cited research deficiency for the exact "
         "sub-question. The queries must repair missing, weak, or outdated "
         "evidence without changing the approved sub-question itself. Avoid "
-        "duplicates and make each query materially complementary. Return only "
-        "the structured query list."
+        "duplicates and make each query materially complementary. "
+        "Return exactly one structured object with a single field named "
+        "'queries', whose value is an array of 1 to 3 query strings. "
+        "Do not return prose, explanations, headings, markdown, or code fences. "
+        'The required shape is: {"queries": ["query 1", "query 2"]}.'
     )
     user = (
         f"Research topic:\n{topic.strip()}\n\n"
@@ -175,23 +180,113 @@ def _validate_correction_queries(plan: CorrectionQueryPlan) -> tuple[bool, str]:
     return True, ""
 
 
+def _extract_recovered_correction_queries(
+    exc: BadRequestError,
+) -> list[str] | None:
+    """Extract high-confidence queries from Groq's malformed structured output."""
+    body = getattr(exc, "body", None)
+
+    if not isinstance(body, dict):
+        return None
+
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    if error.get("code") != "output_parse_failed":
+        return None
+
+    failed_generation = error.get("failed_generation")
+    if not isinstance(failed_generation, str) or not failed_generation.strip():
+        return None
+
+    quoted = re.findall(r'"([^"]+)"', failed_generation)
+
+    if quoted:
+        candidates = quoted
+    elif "\n" in failed_generation:
+        lines = [line.strip() for line in failed_generation.splitlines() if line.strip()]
+
+        bullet_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+        marked = [
+            match.group(1).strip()
+            for line in lines
+            if (match := bullet_pattern.match(line))
+        ]
+
+        if marked:
+            candidates = marked
+        else:
+            candidates = lines
+    else:
+        return None
+
+    normalized_candidates: list[str] = []
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        query = " ".join(candidate.strip().split())
+        if not query:
+            continue
+
+        key = query.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        normalized_candidates.append(query)
+
+    return normalized_candidates[:CORRECTION_QUERY_MAX] or None
+
+
 def generate_correction_queries(
     topic: str,
     sub_question: str,
     issues: tuple[str, ...],
     llm_service: LLMService,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     feedback: str | None = None
+
     for attempt in range(CORRECTION_QUERY_RETRY_LIMIT + 1):
-        plan = llm_service.invoke_structured(
-            _correction_query_messages(topic, sub_question, issues, feedback),
-            CorrectionQueryPlan,
-        )
+        try:
+            plan = llm_service.invoke_structured(
+                _correction_query_messages(
+                    topic,
+                    sub_question,
+                    issues,
+                    feedback,
+                ),
+                CorrectionQueryPlan,
+            )
+        except BadRequestError as exc:
+            recovered = _extract_recovered_correction_queries(exc)
+
+            if recovered is None:
+                raise
+
+            recovered_plan = CorrectionQueryPlan(queries=recovered)
+            valid, reason = _validate_correction_queries(recovered_plan)
+
+            if valid:
+                return recovered_plan.queries, True
+
+            if attempt == CORRECTION_QUERY_RETRY_LIMIT:
+                raise CorrectionQueryValidationError(
+                    "Locally recovered correction queries failed validation: "
+                    f"{reason}"
+                ) from exc
+
+            feedback = reason
+            continue
+
         valid, reason = _validate_correction_queries(plan)
+
         if valid:
-            return plan.queries
+            return plan.queries, False
+
         if attempt == CORRECTION_QUERY_RETRY_LIMIT:
             break
+
         feedback = reason
 
     raise CorrectionQueryValidationError(
@@ -243,12 +338,11 @@ def _attempt_correction_candidates(
     )
 
 
-
 def run_research_correction(
     state: ResearchState,
     research_issues: list[str],
     llm_service: LLMService,
-) -> ResearchState:
+) -> tuple[ResearchState, bool]:
     """Execute targeted Research correction while preserving current state."""
     groups = group_research_issues(research_issues, state.sub_questions)
     if not groups:
@@ -267,14 +361,19 @@ def run_research_correction(
     fresh_failed_by_subquestion: dict[str, set[str]] = defaultdict(set)
     search_failed_by_subquestion: set[str] = set()
     new_urls_by_subquestion: dict[str, set[str]] = defaultdict(set)
+    recovered_query_generation = False
 
     for group in groups:
-        queries = generate_correction_queries(
+        queries, recovered = generate_correction_queries(
             state.user_topic,
             group.sub_question,
             group.issues,
             llm_service,
         )
+
+        if recovered:
+            recovered_query_generation = True
+
         for query in queries:
             try:
                 candidates = web_search(query, max_results=CANDIDATE_SIZE)
@@ -287,6 +386,7 @@ def run_research_correction(
 
             before_urls = set(source_by_url)
             failed_before = set(failed_urls)
+
             _attempt_correction_candidates(
                 topic=state.user_topic,
                 sub_question=group.sub_question,
@@ -298,7 +398,9 @@ def run_research_correction(
                 failed_urls=failed_urls,
                 llm_service=llm_service,
             )
+
             after_urls = set(source_by_url)
+
             fresh_failed_by_subquestion[group.sub_question].update(
                 failed_urls - failed_before
             )
@@ -317,14 +419,19 @@ def run_research_correction(
             for source in ordered_sources
             if group.sub_question in source.search_queries
         }
+
         usable_urls = (
             attributed_existing
             | new_urls_by_subquestion[group.sub_question]
         )
-        failed_count = len(fresh_failed_by_subquestion[group.sub_question])
+
+        failed_count = len(
+            fresh_failed_by_subquestion[group.sub_question]
+        )
         usable_count = len(usable_urls)
 
         normalized = _normalize_sub_question(group.sub_question)
+
         if usable_count >= SELECTION_SIZE:
             limitations_by_subquestion.pop(normalized, None)
             continue
@@ -334,8 +441,10 @@ def run_research_correction(
             f"for this sub-question and {failed_count} unique candidate page(s) "
             "actually attempted and found unusable."
         )
+
         if group.sub_question in search_failed_by_subquestion:
             description += " At least one targeted web search failed."
+
         description += " Fewer than three usable sources are currently available."
 
         limitations_by_subquestion[normalized] = ResearchLimitation(
@@ -345,12 +454,16 @@ def run_research_correction(
             description=description,
         )
 
-    return state.model_copy(
+    updated_state = state.model_copy(
         update={
             "sources": ordered_sources,
-            "research_limitations": list(limitations_by_subquestion.values()),
+            "research_limitations": list(
+                limitations_by_subquestion.values()
+            ),
         }
     )
+
+    return updated_state, recovered_query_generation
 
 
 def _issue_categories(issues: Iterable[str]) -> set[str]:
@@ -458,7 +571,11 @@ def run_workflow(
 
         if target == "research":
             research_issues = [issue for issue in critique.issues if issue.startswith("[RESEARCH]")]
-            current = run_research_correction(current, research_issues, llm_service)
+            current, _ = run_research_correction(
+                current,
+                research_issues,
+                llm_service,
+            )
             analysis = analyze_research(current, llm_service)
             current = current.model_copy(
                 update={

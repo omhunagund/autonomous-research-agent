@@ -140,6 +140,10 @@ def _analysis_messages(
         "Research limitations are facts from retrieval, not automatic gaps. "
         "Do not use prior memory reports as evidence for current findings. "
         "Every current finding must be supported by current Source objects."
+        " For every gap with related_sub_question, copy the corresponding current "
+        "sub-question exactly as written in the supplied Sub-questions list. Never "
+        "paraphrase, shorten, rewrite, combine, or invent a sub-question in that "
+        "field."
     )
 
     user = (

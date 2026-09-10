@@ -134,11 +134,23 @@ def _research_correction_node(state: ResearchState, recorder=None) -> dict:
     research_issues = [
         issue for issue in state.critique.issues if issue.startswith("[RESEARCH]")
     ]
-    updated = run_research_correction(
+    updated, recovered_query_generation = run_research_correction(
         state.model_copy(update={"retry_count": state.retry_count + 1}),
         research_issues,
         get_llm_service(),
     )
+    if recovered_query_generation:
+        _record_trace(
+            recorder,
+            state,
+            stage="research",
+            event_type="correction_query_generation_recovered",
+            message=(
+                "Correction-query generation required local recovery from "
+                "malformed structured output; recovered queries passed validation."
+            ),
+            attempt=state.retry_count + 1,
+        )
     analysis = analyze_research(updated, get_llm_service())
     refreshed = updated.model_copy(
         update={
