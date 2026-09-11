@@ -14,6 +14,7 @@ from src.workflow import (
     _finalize_pass,
     _finalize_unresolved_node,
     _research_correction_node,
+    _research_node,
     _route_after_critic,
 )
 from src.agents.orchestrator import MAX_CORRECTION_CYCLES
@@ -276,6 +277,7 @@ def test_research_correction_logs_local_query_recovery(
         lambda state, research_issues, llm_service: (
             updated_state,
             True,
+            False,
         ),
     )
 
@@ -309,4 +311,72 @@ def test_research_correction_logs_local_query_recovery(
     assert (
         "local recovery from malformed structured output"
         in recovery_events[0]["message"]
+    )
+
+
+def test_research_logs_search_selection_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(
+        critique=None,
+        retry_count=0,
+        revision_target=None,
+    )
+
+    updated_state = state.model_copy(
+        update={
+            "sub_questions": [
+                "What evidence supports improved patient outcomes?"
+            ],
+        }
+    )
+
+    def fake_run_research(
+        state,
+        llm_service,
+        on_selection_recovery=None,
+    ):
+        assert on_selection_recovery is not None
+        on_selection_recovery(
+            "What evidence supports improved patient outcomes?"
+        )
+        return updated_state
+
+    monkeypatch.setattr(
+        "src.workflow.run_research",
+        fake_run_research,
+    )
+
+    monkeypatch.setattr(
+        "src.workflow.analyze_research",
+        lambda state, llm_service: Analysis(
+            findings=[],
+            conflicts=[],
+            gaps=[],
+        ),
+    )
+
+    events: list[dict] = []
+
+    def recorder(*args, **kwargs) -> None:
+        events.append(kwargs)
+
+    _research_node(state, recorder)
+
+    recovery_events = [
+        event
+        for event in events
+        if event["event_type"] == "search_selection_recovered"
+    ]
+
+    assert len(recovery_events) == 1
+    assert recovery_events[0]["stage"] == "research"
+    assert (
+        recovery_events[0]["message"]
+        == (
+            'Search-candidate selection for '
+            '"What evidence supports improved patient outcomes?" '
+            "required local recovery from malformed structured output; "
+            "recovered indices passed deterministic validation."
+        )
     )

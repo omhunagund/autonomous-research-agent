@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
+import httpx
 import pytest
+from groq import BadRequestError
 
 from src.agents.research_agent import (
     ResearchPlanningError,
     SearchSelectionError,
     _attempt_candidates,
+    _extract_recovered_selection,
     _validate_selection,
     _validate_sub_questions,
     generate_sub_questions,
@@ -32,6 +35,28 @@ def _search_results(count: int = 5) -> list[SearchResult]:
         )
         for i in range(1, count + 1)
     ]
+
+
+def _output_parse_failed_error(failed_generation: str) -> BadRequestError:
+    response = httpx.Response(
+        400,
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
+    return BadRequestError(
+        "structured output parsing failed",
+        response=response,
+        body={
+            "error": {
+                "message": "Parsing failed.",
+                "type": "invalid_request_error",
+                "code": "output_parse_failed",
+                "failed_generation": failed_generation,
+            }
+        },
+    )
 
 
 def _state() -> ResearchState:
@@ -155,6 +180,72 @@ def test_select_search_candidates_uses_feedback_retry() -> None:
         "https://example.com/5",
     ]
     assert mock_llm.invoke_structured.call_count == 2
+
+
+def test_recover_search_selection_from_malformed_failed_generation() -> None:
+    error = _output_parse_failed_error(
+        "Need 3 most relevant. Likely 1,4,3 maybe."
+    )
+
+    recovered = _extract_recovered_selection(error)
+
+    assert recovered == [1, 4, 3]
+
+
+def test_select_search_candidates_recovers_without_second_llm_call() -> None:
+    candidates = _search_results()
+    mock_llm = Mock()
+    mock_llm.invoke_structured.side_effect = _output_parse_failed_error(
+        "Need 3 most relevant. Likely 1,4,3 maybe."
+    )
+
+    selected = select_search_candidates(
+        "AI in healthcare",
+        "What evidence supports improved patient outcomes?",
+        candidates,
+        mock_llm,
+    )
+
+    assert [item.url for item in selected] == [
+        "https://example.com/1",
+        "https://example.com/4",
+        "https://example.com/3",
+    ]
+    assert mock_llm.invoke_structured.call_count == 1
+
+
+def test_non_output_parse_bad_request_is_not_recovered() -> None:
+    response = httpx.Response(
+        400,
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
+    error = BadRequestError(
+        "malformed request",
+        response=response,
+        body={
+            "error": {
+                "message": "Malformed request.",
+                "type": "invalid_request_error",
+                "code": "invalid_request",
+            }
+        },
+    )
+
+    mock_llm = Mock()
+    mock_llm.invoke_structured.side_effect = error
+
+    with pytest.raises(BadRequestError):
+        select_search_candidates(
+            "AI in healthcare",
+            "What evidence supports improved patient outcomes?",
+            _search_results(),
+            mock_llm,
+        )
+
+    assert mock_llm.invoke_structured.call_count == 1
 
 
 def test_select_search_candidates_fails_after_retry_budget() -> None:

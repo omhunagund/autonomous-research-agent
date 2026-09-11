@@ -19,7 +19,7 @@ from src.agents.research_agent import (
     _add_source,
     _attempt_candidates,
     _candidate_attempt_order,
-    select_search_candidates,
+    _select_search_candidates_with_recovery,
 )
 from src.agents.writing_agent import write_report
 from src.core.llm import LLMService
@@ -306,17 +306,20 @@ def _attempt_correction_candidates(
     citation_counter: list[int],
     failed_urls: set[str],
     llm_service: LLMService,
-) -> None:
+) -> bool:
     """Apply the identical candidate-selection contract to one correction query."""
     if len(candidates) == CANDIDATE_SIZE:
-        selected = select_search_candidates(
-            topic,
-            sub_question,
-            candidates,
-            llm_service,
+        selected, selection_recovered_locally = (
+            _select_search_candidates_with_recovery(
+                topic,
+                sub_question,
+                candidates,
+                llm_service,
+            )
         )
     else:
         selected = None
+        selection_recovered_locally = False
 
     attempt_order = _candidate_attempt_order(candidates, selected)
     attempted_this_query: list[SearchResult] = []
@@ -336,6 +339,8 @@ def _attempt_correction_candidates(
         citation_counter=citation_counter,
         failed_urls=failed_urls,
     )
+
+    return selection_recovered_locally
 
 
 def run_research_correction(
@@ -362,6 +367,7 @@ def run_research_correction(
     search_failed_by_subquestion: set[str] = set()
     new_urls_by_subquestion: dict[str, set[str]] = defaultdict(set)
     recovered_query_generation = False
+    recovered_selection = False
 
     for group in groups:
         queries, recovered = generate_correction_queries(
@@ -387,7 +393,7 @@ def run_research_correction(
             before_urls = set(source_by_url)
             failed_before = set(failed_urls)
 
-            _attempt_correction_candidates(
+            selection_recovered = _attempt_correction_candidates(
                 topic=state.user_topic,
                 sub_question=group.sub_question,
                 search_query=query,
@@ -398,6 +404,9 @@ def run_research_correction(
                 failed_urls=failed_urls,
                 llm_service=llm_service,
             )
+
+            if selection_recovered:
+                recovered_selection = True
 
             after_urls = set(source_by_url)
 
@@ -463,7 +472,7 @@ def run_research_correction(
         }
     )
 
-    return updated_state, recovered_query_generation
+    return updated_state, recovered_query_generation, recovered_selection
 
 
 def _issue_categories(issues: Iterable[str]) -> set[str]:
@@ -571,7 +580,7 @@ def run_workflow(
 
         if target == "research":
             research_issues = [issue for issue in critique.issues if issue.startswith("[RESEARCH]")]
-            current, _ = run_research_correction(
+            current, _, _ = run_research_correction(
                 current,
                 research_issues,
                 llm_service,

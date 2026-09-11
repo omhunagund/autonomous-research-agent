@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
+from collections.abc import Callable
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.core.llm import LLMService
@@ -18,6 +20,10 @@ from src.models.schemas import (
 )
 from src.tools.page_fetcher import PageFetchError, fetch_page_content
 from src.tools.web_search import SearchError, web_search
+
+import re
+
+from groq import BadRequestError
 
 
 PLAN_MIN = 4
@@ -152,6 +158,51 @@ def _selection_messages(
     return [SystemMessage(content=system), HumanMessage(content=user)]
 
 
+def _extract_recovered_selection(
+    exc: BadRequestError,
+) -> list[int] | None:
+    """Extract an explicit three-index selection from malformed Groq output."""
+    body = getattr(exc, "body", None)
+
+    if not isinstance(body, dict):
+        return None
+
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    if error.get("code") != "output_parse_failed":
+        return None
+
+    failed_generation = error.get("failed_generation")
+    if not isinstance(failed_generation, str) or not failed_generation.strip():
+        return None
+
+    text = failed_generation.strip()
+
+    # Only accept an explicit list-like selection pattern.
+    patterns = (
+        r"(?i)\b(?:likely|select(?:ed)?|selection|choose|pick)\b"
+        r".*?\b([1-5])\s*[, ]\s*([1-5])\s*[, ]\s*([1-5])\b",
+        r"\[\s*([1-5])\s*,\s*([1-5])\s*,\s*([1-5])\s*\]",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match is None:
+            continue
+
+        indices = [int(match.group(i)) for i in range(1, 4)]
+
+        selection = SearchSelection(selected_indices=indices)
+        valid, _ = _validate_selection(selection)
+
+        if valid:
+            return indices
+
+    return None
+
+
 def _validate_selection(selection: SearchSelection) -> tuple[bool, str]:
     indices = selection.selected_indices
 
@@ -171,29 +222,44 @@ def _validate_selection(selection: SearchSelection) -> tuple[bool, str]:
     return True, ""
 
 
-def select_search_candidates(
-    topic: str,
+def _select_search_candidates_with_recovery(
+    user_topic: str,
     sub_question: str,
     candidates: list[SearchResult],
     llm_service: LLMService,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], bool]:
     if len(candidates) != CANDIDATE_SIZE:
         raise SearchSelectionError(
-            f"Expected {CANDIDATE_SIZE} search candidates for LLM selection; "
-            f"received {len(candidates)}."
+            f"Expected exactly {CANDIDATE_SIZE} candidates for LLM selection, "
+            f"got {len(candidates)}."
         )
 
-    feedback: str | None = None
+    feedback = None
 
     for attempt in range(SELECTION_RETRY_LIMIT + 1):
-        selection = llm_service.invoke_structured(
-            _selection_messages(topic, sub_question, candidates, feedback),
-            SearchSelection,
-        )
+        try:
+            selection = llm_service.invoke_structured(
+                _selection_messages(
+                    user_topic,
+                    sub_question,
+                    candidates,
+                    feedback,
+                ),
+                SearchSelection,
+            )
+        except BadRequestError as exc:
+            recovered = _extract_recovered_selection(exc)
+            if recovered is not None:
+                return [candidates[index - 1] for index in recovered], True
+            raise
 
         valid, reason = _validate_selection(selection)
+
         if valid:
-            return [candidates[index - 1] for index in selection.selected_indices]
+            return [
+                candidates[index - 1]
+                for index in selection.selected_indices
+            ], False
 
         if attempt == SELECTION_RETRY_LIMIT:
             break
@@ -201,9 +267,24 @@ def select_search_candidates(
         feedback = reason
 
     raise SearchSelectionError(
-        "Unable to produce a valid top-3 candidate selection after "
-        f"{SELECTION_RETRY_LIMIT} validation retries."
+        "Search candidate selection remained invalid after "
+        f"{SELECTION_RETRY_LIMIT + 1} attempts."
     )
+
+
+def select_search_candidates(
+    user_topic: str,
+    sub_question: str,
+    candidates: list[SearchResult],
+    llm_service: LLMService,
+) -> list[SearchResult]:
+    selected, _ = _select_search_candidates_with_recovery(
+        user_topic,
+        sub_question,
+        candidates,
+        llm_service,
+    )
+    return selected
 
 
 def _add_source(
@@ -323,7 +404,11 @@ def _attempt_candidates(
     )
 
 
-def run_research(state: ResearchState, llm_service: LLMService) -> ResearchState:
+def run_research(
+    state: ResearchState,
+    llm_service: LLMService,
+    on_selection_recovery: Callable[[str], None] | None = None,
+) -> ResearchState:
     sub_questions = generate_sub_questions(state.user_topic, llm_service)
 
     source_by_url = {
@@ -372,13 +457,20 @@ def run_research(state: ResearchState, llm_service: LLMService) -> ResearchState
             continue
 
         selected: list[SearchResult] | None = None
+        selection_recovered_locally = False
+
         if len(search_results) == CANDIDATE_SIZE:
-            selected = select_search_candidates(
-                state.user_topic,
-                sub_question,
-                search_results,
-                llm_service,
+            selected, selection_recovered_locally = (
+                _select_search_candidates_with_recovery(
+                    state.user_topic,
+                    sub_question,
+                    search_results,
+                    llm_service,
+                )
             )
+
+        if selection_recovered_locally and on_selection_recovery is not None:
+            on_selection_recovery(sub_question)
 
         attempt_order = _candidate_attempt_order(search_results, selected)
         limitation = _attempt_candidates(

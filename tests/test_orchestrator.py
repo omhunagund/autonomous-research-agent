@@ -286,8 +286,8 @@ def test_research_correction_reuses_top3_selection_for_five_results(monkeypatch)
         lambda query, max_results: candidates,
     )
     monkeypatch.setattr(
-        "src.agents.orchestrator.select_search_candidates",
-        lambda topic, sub_question, got, service: selected,
+        "src.agents.orchestrator._select_search_candidates_with_recovery",
+        lambda topic, sub_question, got, service: (selected, False),
     )
     monkeypatch.setattr(
         "src.agents.orchestrator.fetch_page_content",
@@ -299,13 +299,14 @@ def test_research_correction_reuses_top3_selection_for_five_results(monkeypatch)
         lambda url: "usable evidence " * 40,
     )
 
-    updated, recovered = run_research_correction(
+    updated, recovered_query_generation, recovered_selection = run_research_correction(
         state,
         [f'[RESEARCH] Sub-question: "{Q1}" needs current evidence.'],
         llm,
     )
 
-    assert recovered is False
+    assert recovered_query_generation is False
+    assert recovered_selection is False
     assert len(updated.sources) == 7
     assert updated.sources[-1].citation_id == 7
     assert updated.research_limitations == []
@@ -328,21 +329,22 @@ def test_research_correction_preserves_existing_sources_and_removes_resolved_lim
         lambda query, max_results: candidates,
     )
     monkeypatch.setattr(
-        "src.agents.orchestrator.select_search_candidates",
-        lambda topic, sub_question, got, service: got[:3],
+        "src.agents.orchestrator._select_search_candidates_with_recovery",
+        lambda topic, sub_question, got, service: (got[:3], False),
     )
     monkeypatch.setattr(
         "src.agents.research_agent.fetch_page_content",
         lambda url: "usable evidence " * 40,
     )
 
-    updated, recovered = run_research_correction(
+    updated, recovered_query_generation, recovered_selection = run_research_correction(
         state,
         [f'[RESEARCH] Sub-question 1 — "{Q1}" needs more evidence.'],
         llm,
     )
 
-    assert recovered is False
+    assert recovered_query_generation is False
+    assert recovered_selection is False
     assert [source.citation_id for source in updated.sources[:2]] == [1, 2]
     assert len(updated.sources) == 5
     assert updated.research_limitations == []
@@ -392,13 +394,61 @@ def test_research_correction_continues_after_local_query_recovery(
         lambda url: "usable evidence " * 40,
     )
 
-    updated, recovered = run_research_correction(
+    updated, recovered_query_generation, recovered_selection = run_research_correction(
         state,
         [f'[RESEARCH] Sub-question: "{Q1}" needs current evidence.'],
         llm,
     )
 
-    assert recovered is True
+    assert recovered_query_generation is True
+    assert recovered_selection is False
     assert updated.sources[-1].url == "https://recovered.example/1"
     assert updated.sources[-1].search_queries == [Q1]
     assert llm.invoke_structured.call_count == 1
+
+
+def test_research_correction_recovers_search_selection_without_second_llm_call(
+    monkeypatch,
+) -> None:
+    state = _state()
+    llm = Mock()
+
+    llm.invoke_structured.side_effect = [
+        CorrectionQueryPlan(
+            queries=["latest patient outcome evidence"]
+        ),
+        _output_parse_failed_error(
+            "Need 3 most relevant. Likely 1,4,3 maybe."
+        ),
+    ]
+
+    candidates = [
+        SearchResult(
+            title=f"Candidate {i}",
+            url=f"https://recovered.example/{i}",
+            snippet="evidence",
+        )
+        for i in range(1, 6)
+    ]
+
+    monkeypatch.setattr(
+        "src.agents.orchestrator.web_search",
+        lambda query, max_results: candidates,
+    )
+    monkeypatch.setattr(
+        "src.agents.research_agent.fetch_page_content",
+        lambda url: "usable evidence " * 40,
+    )
+
+    updated, recovered_query_generation, recovered_selection = (
+        run_research_correction(
+            state,
+            [f'[RESEARCH] Sub-question: "{Q1}" needs current evidence.'],
+            llm,
+        )
+    )
+
+    assert recovered_query_generation is False
+    assert recovered_selection is True
+    assert len(updated.sources) == 7
+    assert llm.invoke_structured.call_count == 2

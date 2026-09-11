@@ -46,7 +46,27 @@ def _research_node(state: ResearchState, recorder=None) -> dict:
         recorder, state, stage="research", event_type="research_started",
         message="Research agent is generating sub-questions and gathering web evidence.",
     )
-    updated = run_research(state, get_llm_service())
+    selection_recovery_subquestions: list[str] = []
+
+    updated = run_research(
+        state,
+        get_llm_service(),
+        on_selection_recovery=selection_recovery_subquestions.append,
+    )
+
+    for sub_question in selection_recovery_subquestions:
+        _record_trace(
+            recorder,
+            updated,
+            stage="research",
+            event_type="search_selection_recovered",
+            message=(
+                "Search-candidate selection for "
+                f'"{sub_question}" required local recovery from malformed '
+                "structured output; recovered indices passed deterministic validation."
+            ),
+        )
+
     _record_trace(
         recorder, updated, stage="research", event_type="research_completed",
         message=(
@@ -134,7 +154,7 @@ def _research_correction_node(state: ResearchState, recorder=None) -> dict:
     research_issues = [
         issue for issue in state.critique.issues if issue.startswith("[RESEARCH]")
     ]
-    updated, recovered_query_generation = run_research_correction(
+    updated, recovered_query_generation, recovered_selection = run_research_correction(
         state.model_copy(update={"retry_count": state.retry_count + 1}),
         research_issues,
         get_llm_service(),
@@ -148,6 +168,19 @@ def _research_correction_node(state: ResearchState, recorder=None) -> dict:
             message=(
                 "Correction-query generation required local recovery from "
                 "malformed structured output; recovered queries passed validation."
+            ),
+            attempt=state.retry_count + 1,
+        )
+    if recovered_selection:
+        _record_trace(
+            recorder,
+            updated,
+            stage="research",
+            event_type="search_selection_recovered",
+            message=(
+                "Search-candidate selection during Research correction required "
+                "local recovery from malformed structured output; recovered indices "
+                "passed deterministic validation."
             ),
             attempt=state.retry_count + 1,
         )
