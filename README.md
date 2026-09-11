@@ -467,6 +467,21 @@ Local runtime data is excluded from version control.
 ```text
 autonomous-research-agent/
 │
+├── docs/
+│   ├── screenshots/
+│   │   ├── 01_home_workspace.png
+│   │   ├── 02_research_execution.png
+│   │   ├── 03_live_agent_trace.png
+│   │   ├── 04_correction_attempt.png
+│   │   ├── 05_final_report.png
+│   │   ├── 06_report_history.png
+│   │   └── 07_api_documentation.png
+│   │
+│   └── reports/
+│       ├── software_engineering_report.pdf
+│       ├── cybersecurity_report.pdf
+│       └── healthcare_report.pdf
+│
 ├── frontend/
 │   ├── api_client.py
 │   ├── app.py
@@ -518,7 +533,24 @@ autonomous-research-agent/
 │   └── __init__.py
 │
 ├── tests/
-│   └── ...
+│   ├── __init__.py
+│   ├── test_analysis_agent.py
+│   ├── test_api.py
+│   ├── test_critic_agent.py
+│   ├── test_evidence_compaction.py
+│   ├── test_execution.py
+│   ├── test_frontend_api_client.py
+│   ├── test_frontend_workspace.py
+│   ├── test_llm_schema.py
+│   ├── test_llm.py
+│   ├── test_orchestrator.py
+│   ├── test_page_fetcher.py
+│   ├── test_persistence.py
+│   ├── test_phase19_report_schema.py
+│   ├── test_research_agent.py
+│   ├── test_web_search.py
+│   ├── test_workflow.py
+│   └── test_writing_agent.py
 │
 ├── .env.example
 ├── .gitignore
@@ -593,7 +625,7 @@ FALLBACK_MODEL=qwen/qwen3.8-27b
 From the project root:
 
 ```powershell
-python -m uvicorn src.api.main:app --reload
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 The API will be available at:
@@ -629,7 +661,7 @@ http://localhost:8000/docs
 Open a second terminal, activate the same virtual environment, and run:
 
 ```powershell
-python -m streamlit run frontend/app.py
+python -m streamlit run frontend/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
 The dashboard will be available at:
@@ -822,92 +854,49 @@ These tests exercised the complete Research → Analysis → Writing → Critic 
 
 ## Screenshots
 
-The final repository should include selected screenshots demonstrating the most important parts of the application.
+The screenshots below demonstrate the main user-facing capabilities of the Autonomous Research & Report Agent, including research execution, live multi-agent tracing, self-correction, report generation, persistent history, and the FastAPI backend.
 
-Recommended screenshots:
+### 1. Research Workspace
 
-### Live Research Trace
+The main Streamlit workspace where a user enters a research topic and starts a new research execution.
 
-Show:
+![Research Workspace](docs/screenshots/01_home_workspace.png)
 
-- Active research
-- Attempt indicator
-- Research / Analysis / Writing / Critic stages
-- Live trace events
-- Completion state
+### 2. Research Execution
 
-### Final Report
+The application while an active research task is being executed, showing the live execution state and progress through the workflow.
 
-Show:
+![Research Execution](docs/screenshots/02_research_execution.png)
 
-- Executive Summary
-- Key Findings
-- Confidence indicators
-- Supporting Evidence
-- Gaps
-- Conflicts
-- References
+### 3. Live Agent Trace
 
-### Research History
+The live workflow trace showing the progression through the Research, Analysis, Writing, and Critic stages.
 
-Show:
+![Live Agent Trace](docs/screenshots/03_live_agent_trace.png)
 
-- Multiple completed reports
-- Quality labels
-- Report dates
-- Topic selection
+### 4. Self-Correction and Revision
 
-Suggested repository location:
+A research execution that required a correction cycle, demonstrating the Critic-driven retry and targeted revision workflow.
 
-```text
-docs/screenshots/
-```
+![Correction Attempt](docs/screenshots/04_correction_attempt.png)
 
-Example Markdown:
+### 5. Final Research Report
 
-```markdown
-![Live Workflow Trace](docs/screenshots/live-workflow-trace.png)
+The completed document-style report showing the Executive Summary, Key Findings, Supporting Evidence, Research Gaps, Conflicting Information, confidence indicators, and references.
 
-![Final Research Report](docs/screenshots/final-report.png)
+![Final Research Report](docs/screenshots/05_final_report.png)
 
-![Research History](docs/screenshots/research-history.png)
-```
+### 6. Persistent Report History
 
----
+The history sidebar showing previously completed research reports and allowing a previous report to be selected and reviewed again.
 
-## Demo GIF
+![Report History](docs/screenshots/06_report_history.png)
 
-A short demonstration GIF should show the complete user journey:
+### 7. FastAPI Documentation
 
-```text
-Enter research topic
-        ↓
-Research starts
-        ↓
-Live workflow trace
-        ↓
-Research
-        ↓
-Analysis
-        ↓
-Writing
-        ↓
-Critic evaluation
-        ↓
-Final cited report
-```
+The FastAPI Swagger UI showing the available research, trace, active-execution, and health endpoints.
 
-Suggested location:
-
-```text
-docs/demo.gif
-```
-
-Once the final recording is added:
-
-```markdown
-![Autonomous Research & Report Agent Demo](docs/demo.gif)
-```
+![FastAPI Documentation](docs/screenshots/07_api_documentation.png)
 
 ---
 
