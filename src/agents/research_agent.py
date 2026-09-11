@@ -171,7 +171,7 @@ def _extract_recovered_selection(
     if not isinstance(error, dict):
         return None
 
-    if error.get("code") != "output_parse_failed":
+    if error.get("code") not in {"output_parse_failed", "json_validate_failed"}:
         return None
 
     failed_generation = error.get("failed_generation")
@@ -182,6 +182,7 @@ def _extract_recovered_selection(
 
     # Only accept an explicit list-like selection pattern.
     patterns = (
+        r'"selected_indices"\s*:\s*\[\s*([1-5])\s*,\s*([1-5])\s*,\s*([1-5])',
         r"(?i)\b(?:likely|select(?:ed)?|selection|choose|pick)\b"
         r".*?\b([1-5])\s*[, ]\s*([1-5])\s*[, ]\s*([1-5])\b",
         r"\[\s*([1-5])\s*,\s*([1-5])\s*,\s*([1-5])\s*\]",

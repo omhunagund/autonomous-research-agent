@@ -37,7 +37,10 @@ def _search_results(count: int = 5) -> list[SearchResult]:
     ]
 
 
-def _output_parse_failed_error(failed_generation: str) -> BadRequestError:
+def _output_parse_failed_error(
+    failed_generation: str,
+    code: str = "output_parse_failed",
+) -> BadRequestError:
     response = httpx.Response(
         400,
         request=httpx.Request(
@@ -52,7 +55,7 @@ def _output_parse_failed_error(failed_generation: str) -> BadRequestError:
             "error": {
                 "message": "Parsing failed.",
                 "type": "invalid_request_error",
-                "code": "output_parse_failed",
+                "code": code,
                 "failed_generation": failed_generation,
             }
         },
@@ -192,6 +195,17 @@ def test_recover_search_selection_from_malformed_failed_generation() -> None:
     assert recovered == [1, 4, 3]
 
 
+def test_recover_search_selection_from_json_validate_failed_generation() -> None:
+    error = _output_parse_failed_error(
+        '{"selected_indices":[1,3,2]',
+        code="json_validate_failed",
+    )
+
+    recovered = _extract_recovered_selection(error)
+
+    assert recovered == [1, 3, 2]
+
+
 def test_select_search_candidates_recovers_without_second_llm_call() -> None:
     candidates = _search_results()
     mock_llm = Mock()
@@ -210,6 +224,29 @@ def test_select_search_candidates_recovers_without_second_llm_call() -> None:
         "https://example.com/1",
         "https://example.com/4",
         "https://example.com/3",
+    ]
+    assert mock_llm.invoke_structured.call_count == 1
+
+
+def test_select_search_candidates_recovers_json_validate_failure_without_second_llm_call() -> None:
+    candidates = _search_results()
+    mock_llm = Mock()
+    mock_llm.invoke_structured.side_effect = _output_parse_failed_error(
+        '{"selected_indices":[1,3,2]',
+        code="json_validate_failed",
+    )
+
+    selected = select_search_candidates(
+        "AI in healthcare",
+        "What evidence supports improved patient outcomes?",
+        candidates,
+        mock_llm,
+    )
+
+    assert [item.url for item in selected] == [
+        "https://example.com/1",
+        "https://example.com/3",
+        "https://example.com/2",
     ]
     assert mock_llm.invoke_structured.call_count == 1
 
