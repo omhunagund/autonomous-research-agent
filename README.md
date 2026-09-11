@@ -473,9 +473,10 @@ autonomous-research-agent/
 │   │   ├── 02_research_execution.png
 │   │   ├── 03_live_agent_trace.png
 │   │   ├── 04_correction_attempt.png
-│   │   ├── 05_final_report.png
-│   │   ├── 06_report_history.png
-│   │   └── 07_api_documentation.png
+│   │   ├── 05_completed_run.png
+│   │   ├── 06_final_report.png
+│   │   ├── 07_report_history.png
+│   │   └── 08_api_documentation.png
 │   │
 │   └── reports/
 │       ├── software_engineering_report.pdf
@@ -854,7 +855,7 @@ These tests exercised the complete Research → Analysis → Writing → Critic 
 
 ## Screenshots
 
-The screenshots below demonstrate the main user-facing capabilities of the Autonomous Research & Report Agent, including research execution, live multi-agent tracing, self-correction, report generation, persistent history, and the FastAPI backend.
+The screenshots below demonstrate the main user-facing capabilities of the Autonomous Research & Report Agent, including research execution, live multi-agent tracing, self-correction, completed workflow state, report generation, persistent history, and the FastAPI backend.
 
 ### 1. Research Workspace
 
@@ -864,7 +865,7 @@ The main Streamlit workspace where a user enters a research topic and starts a n
 
 ### 2. Research Execution
 
-The application while an active research task is being executed, showing the live execution state and progress through the workflow.
+The application while an active research task is being executed, showing the live execution state and workflow progress.
 
 ![Research Execution](docs/screenshots/02_research_execution.png)
 
@@ -880,23 +881,29 @@ A research execution that required a correction cycle, demonstrating the Critic-
 
 ![Correction Attempt](docs/screenshots/04_correction_attempt.png)
 
-### 5. Final Research Report
+### 5. Completed Research Run
+
+The completed execution state showing the finished workflow trace, attempt information, and successful completion of the research process.
+
+![Completed Research Run](docs/screenshots/05_completed_run.png)
+
+### 6. Final Research Report
 
 The completed document-style report showing the Executive Summary, Key Findings, Supporting Evidence, Research Gaps, Conflicting Information, confidence indicators, and references.
 
-![Final Research Report](docs/screenshots/05_final_report.png)
+![Final Research Report](docs/screenshots/06_final_report.png)
 
-### 6. Persistent Report History
+### 7. Persistent Report History
 
 The history sidebar showing previously completed research reports and allowing a previous report to be selected and reviewed again.
 
-![Report History](docs/screenshots/06_report_history.png)
+![Report History](docs/screenshots/07_report_history.png)
 
-### 7. FastAPI Documentation
+### 8. FastAPI Documentation
 
 The FastAPI Swagger UI showing the available research, trace, active-execution, and health endpoints.
 
-![FastAPI Documentation](docs/screenshots/07_api_documentation.png)
+![FastAPI Documentation](docs/screenshots/08_api_documentation.png)
 
 ---
 
