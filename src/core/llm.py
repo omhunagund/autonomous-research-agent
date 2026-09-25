@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any, TypeVar
 
@@ -185,6 +186,131 @@ def _build_json_schema(schema: type[BaseModel]) -> dict[str, Any]:
     return json_schema
 
 
+_STRUCTURED_OUTPUT_ERROR_CODES = {
+    "output_parse_failed",
+    "json_validate_failed",
+    "tool_use_failed",
+}
+
+
+def _get_structured_error_code(exc: Exception) -> str | None:
+    code = getattr(exc, "code", None)
+
+    if isinstance(code, str):
+        return code.lower()
+
+    return None
+
+
+def _is_structured_output_error(exc: Exception) -> bool:
+    return _get_structured_error_code(exc) in _STRUCTURED_OUTPUT_ERROR_CODES
+
+
+def _get_failed_generation(exc: Exception) -> str | None:
+    """
+    Extract Groq's failed_generation payload when available.
+    """
+
+    body = getattr(exc, "body", None)
+
+    if isinstance(body, dict):
+        error = body.get("error")
+
+        if isinstance(error, dict):
+            failed_generation = error.get("failed_generation")
+            if isinstance(failed_generation, str):
+                return failed_generation
+
+        failed_generation = body.get("failed_generation")
+        if isinstance(failed_generation, str):
+            return failed_generation
+
+    return None
+
+
+def _extract_json_candidates(text: str) -> list[Any]:
+    """
+    Extract complete JSON values embedded in a failed Groq generation.
+
+    This is deliberately conservative:
+    - complete JSON objects/arrays are considered
+    - no guessing or repair of malformed JSON is performed
+    """
+
+    candidates: list[Any] = []
+
+    stripped = text.strip()
+
+    if not stripped:
+        return candidates
+
+    try:
+        candidates.append(json.loads(stripped))
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+
+    for index, character in enumerate(stripped):
+        if character not in "{[":
+            continue
+
+        try:
+            value, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+
+        if value not in candidates:
+            candidates.append(value)
+
+    return candidates
+
+
+def _recover_structured_output(
+    exc: Exception,
+    schema: type[StructuredModel],
+) -> StructuredModel | None:
+    """
+    Recover a schema-valid structured result from Groq's failed_generation.
+
+    This recovery is intentionally generic and provider-specific. It only
+    accepts complete JSON that independently validates against the requested
+    Pydantic schema.
+
+    Tool-call-shaped generations such as:
+
+        {"name": "critiqueassessment", "arguments": {...}}
+
+    are unwrapped through their `arguments` object.
+
+    Malformed or incomplete generations are never repaired or guessed.
+    """
+
+    if not _is_structured_output_error(exc):
+        return None
+
+    failed_generation = _get_failed_generation(exc)
+
+    if not failed_generation:
+        return None
+
+    for candidate in _extract_json_candidates(failed_generation):
+        if not isinstance(candidate, dict):
+            continue
+
+        nested_arguments = candidate.get("arguments")
+
+        if isinstance(nested_arguments, dict):
+            candidate = nested_arguments
+
+        try:
+            return schema.model_validate(candidate)
+        except Exception:
+            continue
+
+    return None
+
+
 def _invoke_groq_structured(
     client: Groq,
     model_name: str,
@@ -300,9 +426,12 @@ class LLMService:
 
         Provider-level retryable failures trigger the fallback model.
 
-        Structured-output validation errors are propagated to the caller
-        because they belong to the caller's validation/retry policy, not
-        the provider fallback policy.
+        Structured-output protocol failures are handled centrally:
+        1. Attempt safe recovery from Groq's failed_generation.
+        2. If recovery is impossible and the failure is a recognized
+           structured-output protocol error, use the fallback model.
+        3. Validate every recovered/fallback result through the requested
+           Pydantic schema.
         """
 
         try:
@@ -315,7 +444,18 @@ class LLMService:
             )
 
         except Exception as primary_error:
-            if not _is_retryable_error(primary_error):
+            recovered = _recover_structured_output(
+                primary_error,
+                schema,
+            )
+
+            if recovered is not None:
+                return recovered
+
+            if not (
+                _is_retryable_error(primary_error)
+                or _is_structured_output_error(primary_error)
+            ):
                 raise
 
             try:
@@ -328,8 +468,13 @@ class LLMService:
                 )
 
             except Exception as fallback_error:
-                if not _is_retryable_error(fallback_error):
-                    raise
+                recovered = _recover_structured_output(
+                    fallback_error,
+                    schema,
+                )
+
+                if recovered is not None:
+                    return recovered
 
                 raise LLMInvocationError(
                     "Both primary and fallback Groq models failed during "

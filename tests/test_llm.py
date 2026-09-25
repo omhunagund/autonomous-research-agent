@@ -32,6 +32,19 @@ class FakeTimeoutError(Exception):
 class FakeConflictError(Exception):
     status_code = 409
 
+class FakeStructuredOutputError(Exception):
+    status_code = 400
+
+    def __init__(self, code: str, failed_generation: str):
+        super().__init__(f"Groq structured output error: {code}")
+        self.code = code
+        self.body = {
+            "error": {
+                "code": code,
+                "failed_generation": failed_generation,
+            }
+        }
+
 
 # ---------------------------------------------------------------------------
 # Error classification tests
@@ -351,3 +364,136 @@ def test_structured_invalid_json_raises_validation_error():
             messages,
             ExampleStructuredOutput,
         )
+
+@pytest.mark.parametrize(
+    "error_code,failed_generation",
+    [
+        (
+            "output_parse_failed",
+            '{"answer": "recovered response"}',
+        ),
+        (
+            "json_validate_failed",
+            '{"answer": "recovered response"}',
+        ),
+        (
+            "tool_use_failed",
+            (
+                '{"name": "examplestructuredoutput", '
+                '"arguments": {"answer": "recovered response"}}'
+            ),
+        ),
+    ],
+)
+def test_structured_protocol_errors_recover_valid_json(
+    error_code: str,
+    failed_generation: str,
+):
+    groq_client = Mock()
+
+    groq_client.chat.completions.create.side_effect = [
+        FakeStructuredOutputError(
+            error_code,
+            failed_generation,
+        )
+    ]
+
+    service = LLMService(
+        primary_model=Mock(),
+        fallback_model=Mock(),
+        groq_client=groq_client,
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+
+    result = service.invoke_structured(
+        messages,
+        ExampleStructuredOutput,
+    )
+
+    assert result == ExampleStructuredOutput(
+        answer="recovered response"
+    )
+
+    groq_client.chat.completions.create.assert_called_once()
+
+def test_structured_protocol_error_with_unusable_generation_uses_fallback():
+    groq_client = Mock()
+
+    primary_error = FakeStructuredOutputError(
+        "tool_use_failed",
+        '{"name": "examplestructuredoutput", "arguments": {"wrong": 123}}',
+    )
+
+    fallback_response = Mock()
+    fallback_response.choices = [
+        Mock(
+            message=Mock(
+                content='{"answer": "fallback response"}'
+            )
+        )
+    ]
+
+    groq_client.chat.completions.create.side_effect = [
+        primary_error,
+        fallback_response,
+    ]
+
+    service = LLMService(
+        primary_model=Mock(),
+        fallback_model=Mock(),
+        groq_client=groq_client,
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+
+    result = service.invoke_structured(
+        messages,
+        ExampleStructuredOutput,
+    )
+
+    assert result == ExampleStructuredOutput(
+        answer="fallback response"
+    )
+
+    assert groq_client.chat.completions.create.call_count == 2
+
+def test_structured_tool_use_failure_recovers_critique_style_arguments():
+    groq_client = Mock()
+
+    primary_error = FakeStructuredOutputError(
+        "tool_use_failed",
+        (
+            '{"name": "critiqueassessment", "arguments": '
+            '{"answer": "recovered response"}}'
+        ),
+    )
+
+    groq_client.chat.completions.create.side_effect = [
+        primary_error,
+    ]
+
+    service = LLMService(
+        primary_model=Mock(),
+        fallback_model=Mock(),
+        groq_client=groq_client,
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+
+    result = service.invoke_structured(
+        messages,
+        ExampleStructuredOutput,
+    )
+
+    assert result == ExampleStructuredOutput(
+        answer="recovered response"
+    )
+
+    groq_client.chat.completions.create.assert_called_once()
