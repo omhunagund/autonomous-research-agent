@@ -235,23 +235,35 @@ Inline citations connect report claims to numbered references.
 
 ### Robust Structured-Output Handling
 
-The system includes deterministic validation around structured LLM output.
+The system includes centralized and schema-aware handling for structured LLM output failures.
 
-Examples include recovery from malformed provider output such as:
+The reliability layer handles provider-side structured-output failures such as:
 
 ```text
-Need 3 most relevant. Likely 1,4,3 maybe.
+output_parse_failed
+json_validate_failed
+tool_use_failed
 ```
 
-and malformed structured JSON such as:
+It supports narrowly defined deterministic recovery for explicitly recoverable formats, including malformed selection output and tool-call-shaped structured responses.
 
-```json
+For example:
+
+```text
+Need 3 most relevant. Probably 2,4,5.
+```
+
+and:
+
+```text
 {"selected_indices":[1,3,2]
 ```
 
-Only narrowly defined, explicitly recoverable formats are accepted, and recovered values still pass the application's deterministic validation rules.
+can be recovered when the intended structured meaning is unambiguous.
 
-Unrelated provider errors are not silently recovered.
+Recovered values are always validated against the requested Pydantic schema before being accepted.
+
+Unrecoverable or unrelated provider/application errors are not silently guessed or rewritten.
 
 ---
 
@@ -274,7 +286,7 @@ Fallback is reserved for retryable provider conditions such as:
 - Transient network failures
 - Temporary provider/server failures
 
-Application and schema errors are not automatically treated as fallback conditions.
+Structured-output protocol failures are first handled through deterministic recovery. If recovery is unsuccessful, the configured fallback model may be attempted. Other application-level validation errors and malformed requests are not silently treated as provider failures.
 
 ---
 
@@ -495,8 +507,7 @@ autonomous-research-agent/
 │   │   ├── critic_agent.py
 │   │   ├── orchestrator.py
 │   │   ├── research_agent.py
-│   │   ├── writing_agent.py
-│   │   └── __init__.py
+│   │   └── writing_agent.py
 │   │
 │   ├── api/
 │   │   ├── errors.py
@@ -512,26 +523,14 @@ autonomous-research-agent/
 │   │   ├── persistence.py
 │   │   └── __init__.py
 │   │
-│   ├── graph/
-│   │   └── __init__.py
-│   │
-│   ├── memory/
-│   │   └── __init__.py
-│   │
 │   ├── models/
-│   │   ├── schemas.py
-│   │   └── __init__.py
-│   │
-│   ├── serving/
-│   │   └── __init__.py
+│   │   └── schemas.py
 │   │
 │   ├── tools/
 │   │   ├── page_fetcher.py
-│   │   ├── web_search.py
-│   │   └── __init__.py
+│   │   └── web_search.py
 │   │
-│   ├── workflow.py
-│   └── __init__.py
+│   └── workflow.py
 │
 ├── tests/
 │   ├── __init__.py
@@ -555,9 +554,10 @@ autonomous-research-agent/
 │
 ├── .env.example
 ├── .gitignore
+├── README.md
+├── SampleTopics.txt
 ├── requirements.txt
-├── requirements-dev.txt
-└── README.md
+└── requirements-dev.txt
 ```
 
 ---
@@ -802,13 +802,13 @@ FastAPI automatically exposes:
 Run the complete test suite:
 
 ```powershell
-pytest -q
+python -m pytest -q
 ```
 
 The current validated test suite contains:
 
 ```text
-226 passed
+237 passed
 ```
 
 with one existing dependency deprecation warning from Starlette/AnyIO.
@@ -835,21 +835,30 @@ The test suite covers areas including:
 
 ## Example Research Topics
 
-The system has been live-tested across multiple domains, including:
+The system has been live-tested across multiple research domains, including:
 
 ### Software Engineering
-
 > How are AI coding assistants changing software engineering workflows, code quality, and developer productivity in 2026?
 
 ### Cybersecurity
-
 > How is generative AI changing cybersecurity practices, threat detection, and security operations in 2026?
 
 ### Healthcare
-
 > How is generative AI transforming healthcare delivery, clinical decision-making, and patient outcomes in 2026?
 
-These tests exercised the complete Research → Analysis → Writing → Critic workflow and produced persistent report history entries.
+### Scientific Research
+> How is generative AI transforming scientific research, drug discovery, and laboratory workflows in 2026?
+
+### Environmental Conservation
+> How are coral reef restoration efforts affecting marine biodiversity, coastal ecosystems, and local communities in 2026?
+
+### Public Libraries
+> How are public libraries adapting to changing reading habits, digital media, and community needs in 2026?
+
+### Urban Environment
+> How is urban noise pollution affecting human well-being, wildlife, and the design of cities in 2026?
+
+These tests exercised the complete Research → Analysis → Writing → Critic workflow across different subject domains and produced persistent report history entries.
 
 ---
 
@@ -947,9 +956,9 @@ These may trigger the configured LLM fallback:
 
 ### Structured Output Failures
 
-Specific malformed provider outputs may undergo narrowly scoped deterministic recovery.
+Provider-side structured-output failures such as `output_parse_failed`, `json_validate_failed`, and `tool_use_failed` are handled through centralized and schema-aware recovery.
 
-Recovered data is always passed through the application's validation layer before being accepted.
+Explicitly recoverable outputs are validated against the requested Pydantic schema before being accepted. If a structured-output failure cannot be recovered, the configured fallback model may be attempted.
 
 ### Application Errors
 
@@ -1105,7 +1114,7 @@ The Critic independently evaluates report quality.
 
 **Targeted correction**
 
-Only the deficient workflow stage is re-run when possible.
+When the Critic identifies an analysis-only deficiency, the workflow preserves the latest report and finalizes it with a LOW quality indicator rather than rerunning the Analysis stage. Only the deficient workflow stage is re-run when possible.
 
 **Traceability**
 
@@ -1124,7 +1133,7 @@ The core implementation is complete and has been validated through automated tes
 Current validation:
 
 ```text
-Automated tests: 226 passed
+Automated tests: 237 passed
 Live multi-domain research: validated
 FastAPI backend: validated
 Streamlit frontend: validated
