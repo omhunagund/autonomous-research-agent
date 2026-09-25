@@ -199,6 +199,17 @@ def _get_structured_error_code(exc: Exception) -> str | None:
     if isinstance(code, str):
         return code.lower()
 
+    body = getattr(exc, "body", None)
+
+    if isinstance(body, dict):
+        error = body.get("error")
+
+        if isinstance(error, dict):
+            body_code = error.get("code")
+
+            if isinstance(body_code, str):
+                return body_code.lower()
+
     return None
 
 

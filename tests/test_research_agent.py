@@ -195,6 +195,16 @@ def test_recover_search_selection_from_malformed_failed_generation() -> None:
     assert recovered == [1, 4, 3]
 
 
+def test_recover_search_selection_from_probably_failed_generation() -> None:
+    error = _output_parse_failed_error(
+        "Need 3 most relevant. Probably 2,4,5."
+    )
+
+    recovered = _extract_recovered_selection(error)
+
+    assert recovered == [2, 4, 5]
+
+
 def test_recover_search_selection_from_json_validate_failed_generation() -> None:
     error = _output_parse_failed_error(
         '{"selected_indices":[1,3,2]',

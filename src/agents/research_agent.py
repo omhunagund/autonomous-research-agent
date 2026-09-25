@@ -183,7 +183,8 @@ def _extract_recovered_selection(
     # Only accept an explicit list-like selection pattern.
     patterns = (
         r'"selected_indices"\s*:\s*\[\s*([1-5])\s*,\s*([1-5])\s*,\s*([1-5])',
-        r"(?i)\b(?:likely|select(?:ed)?|selection|choose|pick)\b"
+        r"(?i)\b(?:likely|probably|select(?:ed)?|selection|choose|pick|"
+        r"recommend(?:ed)?)\b"
         r".*?\b([1-5])\s*[, ]\s*([1-5])\s*[, ]\s*([1-5])\b",
         r"\[\s*([1-5])\s*,\s*([1-5])\s*,\s*([1-5])\s*\]",
     )
