@@ -205,6 +205,38 @@ def test_recover_search_selection_from_probably_failed_generation() -> None:
     assert recovered == [2, 4, 5]
 
 
+def test_select_search_candidates_passes_schema_recovery_handler():
+    candidates = _search_results()
+    mock_llm = Mock()
+
+    def invoke_structured(*args, **kwargs):
+        recovery_handler = kwargs["recovery_handler"]
+
+        error = _output_parse_failed_error(
+            "Need 3 most relevant. Probably 2,4,5.",
+            code="tool_use_failed",
+        )
+
+        return recovery_handler(error)
+
+    mock_llm.invoke_structured.side_effect = invoke_structured
+
+    selected = select_search_candidates(
+        "AI in healthcare",
+        "What evidence supports improved patient outcomes?",
+        candidates,
+        mock_llm,
+    )
+
+    assert [item.url for item in selected] == [
+        "https://example.com/2",
+        "https://example.com/4",
+        "https://example.com/5",
+    ]
+
+    mock_llm.invoke_structured.assert_called_once()
+
+
 def test_recover_search_selection_from_json_validate_failed_generation() -> None:
     error = _output_parse_failed_error(
         '{"selected_indices":[1,3,2]',

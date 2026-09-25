@@ -193,7 +193,11 @@ def _extract_recovered_correction_queries(
     if not isinstance(error, dict):
         return None
 
-    if error.get("code") != "output_parse_failed":
+    if error.get("code") not in {
+        "output_parse_failed",
+        "json_validate_failed",
+        "tool_use_failed",
+    }:
         return None
 
     failed_generation = error.get("failed_generation")
@@ -248,6 +252,30 @@ def generate_correction_queries(
     feedback: str | None = None
 
     for attempt in range(CORRECTION_QUERY_RETRY_LIMIT + 1):
+        recovery_used = False
+
+        def recover_correction_queries(
+            exc: Exception,
+        ) -> CorrectionQueryPlan | None:
+            nonlocal recovery_used
+
+            if not isinstance(exc, BadRequestError):
+                return None
+
+            recovered = _extract_recovered_correction_queries(exc)
+
+            if recovered is None:
+                return None
+
+            recovered_plan = CorrectionQueryPlan(queries=recovered)
+            valid, _ = _validate_correction_queries(recovered_plan)
+
+            if not valid:
+                return None
+
+            recovery_used = True
+            return recovered_plan
+
         try:
             plan = llm_service.invoke_structured(
                 _correction_query_messages(
@@ -257,8 +285,13 @@ def generate_correction_queries(
                     feedback,
                 ),
                 CorrectionQueryPlan,
+                recovery_handler=recover_correction_queries,
             )
+
         except BadRequestError as exc:
+            # Preserve compatibility with direct/mock LLM implementations
+            # that raise the provider error instead of invoking the supplied
+            # recovery handler.
             recovered = _extract_recovered_correction_queries(exc)
 
             if recovered is None:
@@ -282,7 +315,7 @@ def generate_correction_queries(
         valid, reason = _validate_correction_queries(plan)
 
         if valid:
-            return plan.queries, False
+            return plan.queries, recovery_used
 
         if attempt == CORRECTION_QUERY_RETRY_LIMIT:
             break
@@ -347,7 +380,7 @@ def run_research_correction(
     state: ResearchState,
     research_issues: list[str],
     llm_service: LLMService,
-) -> tuple[ResearchState, bool]:
+) -> tuple[ResearchState, bool, bool]:
     """Execute targeted Research correction while preserving current state."""
     groups = group_research_issues(research_issues, state.sub_questions)
     if not groups:

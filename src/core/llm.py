@@ -7,6 +7,7 @@ from groq import Groq
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_groq import ChatGroq
 from pydantic import BaseModel
+from collections.abc import Callable
 
 
 load_dotenv()
@@ -429,6 +430,7 @@ class LLMService:
         self,
         messages: list[BaseMessage],
         schema: type[StructuredModel],
+        recovery_handler: Callable[[Exception], StructuredModel | None] | None = None,
         **kwargs: Any,
     ) -> StructuredModel:
         """
@@ -463,6 +465,14 @@ class LLMService:
             if recovered is not None:
                 return recovered
 
+            if recovery_handler is not None and _is_structured_output_error(
+                primary_error
+            ):
+                recovered = recovery_handler(primary_error)
+
+                if recovered is not None:
+                    return recovered
+
             if not (
                 _is_retryable_error(primary_error)
                 or _is_structured_output_error(primary_error)
@@ -486,6 +496,22 @@ class LLMService:
 
                 if recovered is not None:
                     return recovered
+
+                if recovery_handler is not None and _is_structured_output_error(
+                    fallback_error
+                ):
+                    recovered = recovery_handler(fallback_error)
+
+                    if recovered is not None:
+                        return recovered
+
+                if not _is_retryable_error(fallback_error):
+                    raise LLMInvocationError(
+                        "Both primary and fallback Groq models failed during "
+                        "structured invocation. "
+                        f"Primary error: {primary_error}. "
+                        f"Fallback error: {fallback_error}."
+                    ) from fallback_error
 
                 raise LLMInvocationError(
                     "Both primary and fallback Groq models failed during "

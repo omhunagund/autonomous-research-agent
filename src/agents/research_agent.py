@@ -171,7 +171,11 @@ def _extract_recovered_selection(
     if not isinstance(error, dict):
         return None
 
-    if error.get("code") not in {"output_parse_failed", "json_validate_failed"}:
+    if error.get("code") not in {
+        "output_parse_failed",
+        "json_validate_failed",
+        "tool_use_failed",
+    }:
         return None
 
     failed_generation = error.get("failed_generation")
@@ -239,6 +243,38 @@ def _select_search_candidates_with_recovery(
     feedback = None
 
     for attempt in range(SELECTION_RETRY_LIMIT + 1):
+        selection_recovered_locally = False
+
+        def recover_selection(exc: Exception) -> SearchSelection | None:
+            nonlocal selection_recovered_locally
+
+            if not isinstance(exc, BadRequestError):
+                return None
+
+            recovered = _extract_recovered_selection(exc)
+
+            if recovered is None:
+                return None
+
+            selection_recovered_locally = True
+            return SearchSelection(selected_indices=recovered)
+
+        selection_recovered_locally = False
+
+        def recover_selection(exc: Exception) -> SearchSelection | None:
+            nonlocal selection_recovered_locally
+
+            if not isinstance(exc, BadRequestError):
+                return None
+
+            recovered = _extract_recovered_selection(exc)
+
+            if recovered is None:
+                return None
+
+            selection_recovered_locally = True
+            return SearchSelection(selected_indices=recovered)
+
         try:
             selection = llm_service.invoke_structured(
                 _selection_messages(
@@ -248,12 +284,18 @@ def _select_search_candidates_with_recovery(
                     feedback,
                 ),
                 SearchSelection,
+                recovery_handler=recover_selection,
             )
         except BadRequestError as exc:
-            recovered = _extract_recovered_selection(exc)
-            if recovered is not None:
-                return [candidates[index - 1] for index in recovered], True
-            raise
+            # Preserve compatibility with direct/mock LLM implementations
+            # that raise the provider error instead of invoking the supplied
+            # recovery handler themselves.
+            recovered = recover_selection(exc)
+
+            if recovered is None:
+                raise
+
+            selection = recovered
 
         valid, reason = _validate_selection(selection)
 
@@ -261,7 +303,7 @@ def _select_search_candidates_with_recovery(
             return [
                 candidates[index - 1]
                 for index in selection.selected_indices
-            ], False
+            ], selection_recovered_locally
 
         if attempt == SELECTION_RETRY_LIMIT:
             break

@@ -268,6 +268,54 @@ def test_generate_correction_queries_recovers_without_second_llm_call() -> None:
     assert llm.invoke_structured.call_count == 1
 
 
+def test_generate_correction_queries_passes_schema_recovery_handler():
+    llm = Mock()
+
+    def invoke_structured(*args, **kwargs):
+        recovery_handler = kwargs["recovery_handler"]
+
+        error = _output_parse_failed_error(
+            'Need queries: "latest patient outcome evidence".',
+        )
+
+        return recovery_handler(error)
+
+    llm.invoke_structured.side_effect = invoke_structured
+
+    queries, recovered = generate_correction_queries(
+        "AI in healthcare",
+        Q1,
+        ("[RESEARCH] issue",),
+        llm,
+    )
+
+    assert queries == ["latest patient outcome evidence"]
+    assert recovered is True
+    assert llm.invoke_structured.call_count == 1
+
+
+def test_generate_correction_queries_recovers_tool_use_failed_generation():
+    error = _output_parse_failed_error(
+        'Need queries: "latest patient outcome evidence".',
+    )
+
+    error.body["error"]["code"] = "tool_use_failed"
+
+    llm = Mock()
+    llm.invoke_structured.side_effect = error
+
+    queries, recovered = generate_correction_queries(
+        "AI in healthcare",
+        Q1,
+        ("[RESEARCH] issue",),
+        llm,
+    )
+
+    assert queries == ["latest patient outcome evidence"]
+    assert recovered is True
+    assert llm.invoke_structured.call_count == 1
+
+
 def test_research_correction_reuses_top3_selection_for_five_results(monkeypatch) -> None:
     state = _state()
     llm = Mock()

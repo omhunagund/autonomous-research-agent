@@ -4,6 +4,12 @@ import pytest
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
+from src.models.schemas import (
+    CritiqueAssessment,
+    CritiqueCheck,
+    InternalReportDraft,
+)
+
 from src.core.llm import (
     LLMConfigurationError,
     LLMInvocationError,
@@ -494,6 +500,94 @@ def test_structured_tool_use_failure_recovers_critique_style_arguments():
 
     assert result == ExampleStructuredOutput(
         answer="recovered response"
+    )
+
+    groq_client.chat.completions.create.assert_called_once()
+
+def test_structured_tool_use_failure_recovers_actual_critique_assessment():
+    groq_client = Mock()
+
+    primary_error = FakeStructuredOutputError(
+        "tool_use_failed",
+        (
+            '{"name": "critiqueassessment", "arguments": '
+            '{"faithfulness": "pass", '
+            '"coverage": "pass", '
+            '"recency": "pass", '
+            '"balance": "pass", '
+            '"issues": []}}'
+        ),
+    )
+
+    groq_client.chat.completions.create.side_effect = [
+        primary_error,
+    ]
+
+    service = LLMService(
+        primary_model=Mock(),
+        fallback_model=Mock(),
+        groq_client=groq_client,
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+
+    result = service.invoke_structured(
+        messages,
+        CritiqueAssessment,
+    )
+
+    assert result == CritiqueAssessment(
+        faithfulness=CritiqueCheck.PASS,
+        coverage=CritiqueCheck.PASS,
+        recency=CritiqueCheck.PASS,
+        balance=CritiqueCheck.PASS,
+        issues=[],
+    )
+
+    groq_client.chat.completions.create.assert_called_once()
+
+def test_structured_tool_use_failure_recovers_actual_writer_draft():
+    groq_client = Mock()
+
+    primary_error = FakeStructuredOutputError(
+        "tool_use_failed",
+        (
+            '{"name": "internalreportdraft", "arguments": '
+            '{"executive_summary": "Recovered summary.", '
+            '"finding_drafts": [], '
+            '"evidence_drafts": [], '
+            '"gap_drafts": [], '
+            '"conflict_drafts": []}}'
+        ),
+    )
+
+    groq_client.chat.completions.create.side_effect = [
+        primary_error,
+    ]
+
+    service = LLMService(
+        primary_model=Mock(),
+        fallback_model=Mock(),
+        groq_client=groq_client,
+        primary_model_name="primary-model",
+        fallback_model_name="fallback-model",
+    )
+
+    messages = [HumanMessage(content="test")]
+
+    result = service.invoke_structured(
+        messages,
+        InternalReportDraft,
+    )
+
+    assert result == InternalReportDraft(
+        executive_summary="Recovered summary.",
+        finding_drafts=[],
+        evidence_drafts=[],
+        gap_drafts=[],
+        conflict_drafts=[],
     )
 
     groq_client.chat.completions.create.assert_called_once()
